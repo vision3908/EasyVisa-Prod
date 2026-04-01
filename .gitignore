@@ -1,0 +1,26 @@
+@"
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# Data files (too large for GitHub; document how to get them instead)
+data/*.csv
+data/*.parquet
+
+# Model artifacts (stored in MLflow + S3, not Git)
+models/*.pkl
+models/*.joblib
+mlruns/
+mlflow.db
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+"@ | Set-Content .gitignore

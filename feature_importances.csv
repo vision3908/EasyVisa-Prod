@@ -1,0 +1,22 @@
+feature,importance
+education_of_employee_High School,0.28358039696798404
+region_of_employment_West,0.11158446416671101
+region_of_employment_Northeast,0.09711533701974413
+continent_Asia,0.08839311567751953
+region_of_employment_South,0.074932725448352
+prevailing_wage,0.07214966164280376
+continent_North America,0.05683243324525724
+has_job_experience_Y,0.040086480668815594
+region_of_employment_Midwest,0.0329614517695364
+education_of_employee_Master's,0.028958275535246047
+continent_Europe,0.023338279256756973
+education_of_employee_Doctorate,0.01974246769853035
+continent_South America,0.017219717096507384
+yr_of_estab,0.016193141363835057
+unit_of_wage_Year,0.014682905759449808
+no_of_employees,0.007843999998182628
+full_time_position_Y,0.006720973814136636
+requires_job_training_Y,0.0043612094303169145
+continent_Oceania,0.0026216447383583387
+unit_of_wage_Week,0.0005505508962811397
+unit_of_wage_Month,0.00013076780567492348
