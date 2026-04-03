@@ -25,8 +25,31 @@ jobs:
     - name: Build Docker image
       run: docker build -t visa-api:v6 .
 
-    - name: Test Docker image startup
+    # ── DEBUG: Verify image was built ─────────────────────────────
+    - name: Debug — List Docker images
+      run: docker images
+
+    # ── TEST 1: Dependency import check (no MLflow server needed) ─
+    - name: Test — Verify all dependencies present
       run: |
+        docker run --rm visa-api:v6 python -c "
+        import fastapi
+        import mlflow
+        import pandas
+        import joblib
+        import sklearn
+        import uvicorn
+        print('✅ fastapi     :', fastapi.__version__)
+        print('✅ mlflow      :', mlflow.__version__)
+        print('✅ pandas      :', pandas.__version__)
+        print('✅ sklearn     :', sklearn.__version__)
+        print('All dependencies verified OK')
+        "
+
+    # ── TEST 2: Full startup test with logs on failure ────────────
+    - name: Test — Docker container startup with debug logs
+      run: |
+        echo "Starting container..."
         docker run -d -p 8000:8000 \
           -e MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
           -e MLFLOW_MODEL_URI=${{ secrets.MLFLOW_MODEL_URI }} \
@@ -35,12 +58,37 @@ jobs:
           -e AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION }} \
           --name test-container \
           visa-api:v6
+
+        echo "Waiting 15s for startup..."
         sleep 15
-        curl --fail http://localhost:8000/health
+
+        echo "--- CONTAINER LOGS (startup) ---"
+        docker logs test-container
+
+        echo "--- CONTAINER STATUS ---"
+        docker ps -a --filter name=test-container
+
+        echo "--- HEALTH CHECK ---"
+        curl --fail http://localhost:8000/health \
+          && echo "✅ Health check passed" \
+          || (
+            echo "❌ Health check failed — full container logs:"
+            docker logs test-container
+            docker stop test-container
+            docker rm test-container
+            exit 1
+          )
+
+        echo "--- CLEANUP ---"
         docker stop test-container
         docker rm test-container
+        echo "✅ Container test complete"
 
     - name: Push to Docker Hub
       if: github.ref == 'refs/heads/main'
       run: |
         echo "Add docker push here when ready"
+        # Uncomment below when Docker Hub secrets are added:
+        # docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+        # docker tag visa-api:v6 ${{ secrets.DOCKER_USERNAME }}/visa-api:v6
+        # docker push ${{ secrets.DOCKER_USERNAME }}/visa-api:v6
