@@ -23,4 +23,4 @@ mlflow.db
 # OS
 .DS_Store
 Thumbs.db
-"@ | Set-Content .gitignore
+"@ | Set-Content .gitignore.env
