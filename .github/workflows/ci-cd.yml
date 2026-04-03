@@ -133,17 +133,14 @@ jobs:
         echo "    Action : Run integration test in staging env"
         echo "=================================================="
 
+    
     # ── PUSH TO DOCKER HUB (when ready) ───────────────────────────
     - name: Push to Docker Hub
       if: github.ref == 'refs/heads/main'
       run: |
-        echo "Docker push placeholder — uncomment when ready:"
-        echo ""
-        echo "  docker login -u \${{ secrets.DOCKER_USERNAME }} \\"
-        echo "               -p \${{ secrets.DOCKER_PASSWORD }}"
-        echo "  docker tag visa-api:v6 \${{ secrets.DOCKER_USERNAME }}/visa-api:v6"
-        echo "  docker push \${{ secrets.DOCKER_USERNAME }}/visa-api:v6"
-        # Uncomment the 3 lines below when Docker Hub secrets are added:
+        echo "Docker push placeholder - uncomment when ready"
+        echo "Requires secrets: DOCKER_USERNAME, DOCKER_PASSWORD"
+        # Uncomment below when Docker Hub secrets are added:
         # docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
         # docker tag visa-api:v6 ${{ secrets.DOCKER_USERNAME }}/visa-api:v6
-        # docker push ${{ secrets.DOCKER_USERNAME }}/visa-api:v6
+        # docker push ${{ secrets.DOCKER_USERNAME }}/visa-api:v6  
