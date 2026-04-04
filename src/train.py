@@ -111,7 +111,7 @@ def build_model(model_name: str, tune: bool, X_train, y_train):
         log.info("RandomizedSearchCV — 50 iterations × 5 folds...")
         search = RandomizedSearchCV(
             estimator=base, param_distributions=param_grid,
-            n_iter=50, n_jobs=-1, scoring=scorer, cv=5, random_state=1
+            n_iter=20, n_jobs=1, scoring=scorer, cv=5, random_state=1
         )
         search.fit(X_train, y_train)
         log.info("Best params: %s | CV F1: %.4f", search.best_params_, search.best_score_)
