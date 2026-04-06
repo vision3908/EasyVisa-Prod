@@ -24,3 +24,9 @@ mlflow.db
 .DS_Store
 Thumbs.db
 "@ | Set-Content .gitignore.env
+monitoring/inference_log.csv
+monitoring/drift_report.html
+check_artifacts.py
+check_prod.py
+list_versions.py
+promote.py
