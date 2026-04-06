@@ -1,0 +1,24 @@
+# prometheus.yml — V9: scrapes both visa-api AND evidently-service
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── FastAPI prediction metrics ──────────────────────────────────
+  - job_name: 'visa-api'
+    static_configs:
+      - targets: ['visa-api:8000']
+    metrics_path: '/metrics'
+
+  # ── Evidently live drift metrics (V9) ──────────────────────────
+  - job_name: 'evidently'
+    static_configs:
+      - targets: ['evidently-service:8085']
+    metrics_path: '/metrics'
+    scrape_interval: 60s    # Match Evidently's refresh interval
+
+  # ── Prometheus self-monitoring ──────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

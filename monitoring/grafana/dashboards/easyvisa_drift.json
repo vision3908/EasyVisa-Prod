@@ -1,0 +1,84 @@
+
+{
+  "title": "EasyVisa — Data Drift Monitoring",
+  "uid": "easyvisa-drift-v9",
+  "version": 1,
+  "schemaVersion": 36,
+  "refresh": "60s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Dataset Drift Detected",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "options": {"colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"options": {"0": {"text": "NO DRIFT", "color": "green"}},  "type": "value"},
+            {"options": {"1": {"text": "DRIFT!", "color": "red"}}, "type": "value"}
+          ]
+        }
+      },
+      "targets": [{
+        "expr": "evidently_dataset_drift_detected",
+        "legendFormat": "Drift"
+      }]
+    },
+    {
+      "id": 2,
+      "title": "Drift Score (share of drifted features)",
+      "type": "gauge",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1,
+          "thresholds": {
+            "steps": [
+              {"value": 0,    "color": "green"},
+              {"value": 0.3,  "color": "yellow"},
+              {"value": 0.5,  "color": "red"}
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "expr": "evidently_dataset_drift_score",
+        "legendFormat": "Drift Score"
+      }]
+    },
+    {
+      "id": 3,
+      "title": "Drifted Features Count",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{
+        "expr": "evidently_drifted_features_count",
+        "legendFormat": "Drifted Features"
+      }]
+    },
+    {
+      "id": 4,
+      "title": "Inference Log Size",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{
+        "expr": "evidently_inference_log_rows",
+        "legendFormat": "Rows"
+      }]
+    },
+    {
+      "id": 5,
+      "title": "Drift Score Over Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 6},
+      "targets": [{
+        "expr": "evidently_dataset_drift_score",
+        "legendFormat": "Dataset Drift Score"
+      }]
+    }
+  ],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {}
+}

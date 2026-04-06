@@ -1,0 +1,21 @@
+# Dockerfile.evidently — Evidently drift monitoring service (V9)
+# Lightweight Python image — no ML libs needed, just evidently + pandas
+
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install only what Evidently needs
+RUN pip install --no-cache-dir \
+    numpy==1.23.5 \  
+    evidently==0.4.16 \
+    pandas==2.0.3 \
+    prometheus-client>=0.20.0
+
+# Copy the service script
+COPY monitoring/evidently_service.py monitoring/evidently_service.py
+
+# Expose metrics port
+EXPOSE 8085
+
+CMD ["python", "monitoring/evidently_service.py"]

@@ -1,51 +1,76 @@
+﻿"""
+api.py â€” EasyVisa Visa Approval Prediction API  (V9 â€” S3 Artifact Store + Inference Logging)
+FastAPI serving layer â€” loads model AND feature_names exclusively from MLflow (S3 backend)
+
+WHAT THIS DOES:
+  - Loads the registered sklearn model from MLflow Model Registry (S3 backend) at startup
+  - Downloads feature_names.pkl from S3 via MLflow to enforce preprocessing consistency
+  - Serves predictions via POST /predict with full Pydantic request validation
+  - Exposes /health (for Kubernetes probes) and /metrics (for Prometheus scraping)
+  - V9 NEW: Logs every raw prediction input to monitoring/inference_log.csv
+    so the Evidently drift service can compute live data drift metrics
+  - Fails fast at startup if any required env var is missing â€” no silent bad state
+
+REQUIRED ENV VARS (all five must be set before starting):
+  $env:MLFLOW_TRACKING_URI   = "http://localhost:5000"
+  $env:MLFLOW_MODEL_URI      = "models:/easyvisa_gbm/Production"
+  $env:AWS_ACCESS_KEY_ID     = "AKIA..."
+  $env:AWS_SECRET_ACCESS_KEY = "..."
+  $env:AWS_DEFAULT_REGION    = "us-east-1"
+
+STARTUP SEQUENCE:
+  # Window 1 â€” MLflow server with S3 backend (keep running):
+  python -m mlflow server \
+      --backend-store-uri sqlite:///mlflow.db \
+      --default-artifact-root s3://easyvisa-mlflow-vision-2025/mlflow-artifacts \
+      --host 0.0.0.0 --port 5000
+
+  # Window 2 â€” start API:
+  $env:MLFLOW_TRACKING_URI   = "http://localhost:5000"
+  $env:MLFLOW_MODEL_URI      = "models:/easyvisa_gbm/Production"
+  $env:AWS_ACCESS_KEY_ID     = "AKIA..."
+  $env:AWS_SECRET_ACCESS_KEY = "..."
+  $env:AWS_DEFAULT_REGION    = "us-east-1"
+  python -m uvicorn src.api:app --reload --host 0.0.0.0 --port 8000
+
+DOCKER RUN (use your actual Windows IPv4, not localhost):
+  docker run -d -p 8000:8000 \
+    -e MLFLOW_TRACKING_URI=http://192.168.12.157:5000 \
+    -e MLFLOW_MODEL_URI=models:/easyvisa_gbm/Production \
+    -e AWS_ACCESS_KEY_ID=AKIA... \
+    -e AWS_SECRET_ACCESS_KEY=... \
+    -e AWS_DEFAULT_REGION=us-east-1 \
+    -v $(pwd)/monitoring:/app/monitoring \
+    --name visa-api-v9 visa-api:v9
+
+ENDPOINTS:
+  GET  /           -> root health check (API alive)
+  GET  /health     -> detailed health: model version, run_id, feature count
+  POST /predict    -> main prediction endpoint (V9: also logs input to CSV)
+  GET  /model-info -> full model metadata for auditing
+  GET  /metrics    -> Prometheus metrics scrape endpoint
 """
-api.py — EasyVisa Visa Approval Prediction API  (V6 — Registry-Only + Monitoring)
-FastAPI serving layer — loads model AND feature_names exclusively from MLflow
 
-WHAT'S NEW IN V6 MONITORING:
-  - Prometheus metrics: prediction counter, latency histogram, request counter
-  - /metrics endpoint for Prometheus scraping
-  - Structured per-request logging with continent + confidence
-  - Error rate tracking by endpoint
+# --- Standard library --------------------------------------------------------
+import csv        # V9: Write inference inputs to CSV for Evidently drift detection
+import logging    # Structured timestamped logs
+import os         # Read environment variables + check file existence
+import sys        # sys.exit() for fail-fast startup
+import tempfile   # Temp directory for artifact download
+import time       # Latency tracking for Prometheus histogram
+from pathlib import Path  # Cross-platform path handling for log directory creation
 
-REQUIRED ENV VARS:
-  $env:MLFLOW_TRACKING_URI    = "http://<your-ip>:5000"
-  $env:MLFLOW_MODEL_URI       = "models:/easyvisa_gbm/Production"
-  $env:AWS_ACCESS_KEY_ID      = "your_key"
-  $env:AWS_SECRET_ACCESS_KEY  = "your_secret"
-  $env:AWS_DEFAULT_REGION     = "us-east-1"
-"""
-
-# ─── Standard library ────────────────────────────────────────────────────────
-import logging
-import os
-import sys
-import tempfile
-import time
-
-# ─── Third-party ─────────────────────────────────────────────────────────────
-import joblib
-import mlflow
-import mlflow.sklearn
-import pandas as pd
-from dotenv import load_dotenv
+# --- Third-party -------------------------------------------------------------
+import joblib              # Deserialize feature_names.pkl downloaded from MLflow
+import mlflow              # MLflow client for registry and artifact access
+import mlflow.sklearn      # Load sklearn models from registry
+import pandas as pd        # DataFrame for preprocessing (must match train.py exactly)
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
-from prometheus_client import (
-    Counter,
-    Histogram,
-    Gauge,
-    generate_latest,
-    CONTENT_TYPE_LATEST,
-)
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
-# ─── Load .env (dev only — prod uses real env vars) ──────────────────────────
-load_dotenv()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LOGGING
-# ─────────────────────────────────────────────────────────────────────────────
+# --- Logging -----------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
@@ -53,141 +78,118 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PROMETHEUS METRICS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# V9: INFERENCE LOG PATH
+# Every prediction input is appended here for Evidently drift detection.
+# In Docker Compose, visa-api and evidently-service share ./monitoring as a
+# volume so evidently_service.py can read what api.py writes here.
+# -----------------------------------------------------------------------------
+INFERENCE_LOG_PATH = "monitoring/inference_log.csv"
+
+
+# -----------------------------------------------------------------------------
+# PROMETHEUS METRICS â€” defined at module level (created once at startup)
+# -----------------------------------------------------------------------------
 prediction_counter = Counter(
-    "easyvisa_predictions_total",
-    "Total visa predictions made",
-    ["prediction"],           # label: Certified / Denied
+    "predictions_total",
+    "Total predictions made",
+    ["prediction"],           # Label: "Certified" or "Denied"
 )
-
 prediction_latency = Histogram(
-    "easyvisa_prediction_latency_seconds",
-    "End-to-end prediction latency in seconds",
-    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5],
+    "prediction_latency_seconds",
+    "Time to generate a prediction (seconds)",
 )
-
 api_requests = Counter(
-    "easyvisa_api_requests_total",
-    "Total API requests by endpoint and status",
-    ["endpoint", "status"],   # labels: endpoint=/predict, status=success|error
+    "api_requests_total",
+    "Total API requests",
+    ["endpoint", "status"],   # Labels: endpoint path + "success"/"error"
 )
 
-model_confidence = Histogram(
-    "easyvisa_model_confidence",
-    "Distribution of model confidence scores",
-    buckets=[0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0],
-)
 
-certified_ratio = Gauge(
-    "easyvisa_certified_ratio",
-    "Rolling ratio of Certified predictions (last 100)",
-)
-
-# Simple rolling window for certified ratio
-_recent_predictions: list = []
-
-
-def _update_certified_ratio(prediction: str) -> None:
-    """Track rolling certified ratio over last 100 predictions."""
-    global _recent_predictions
-    _recent_predictions.append(1 if prediction == "Certified" else 0)
-    _recent_predictions = _recent_predictions[-100:]   # keep last 100
-    ratio = sum(_recent_predictions) / len(_recent_predictions)
-    certified_ratio.set(ratio)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# REQUIRE ENV VARS — fail-fast with clear fix instructions
-# ─────────────────────────────────────────────────────────────────────────────
-def require_env_vars() -> tuple:
+# -----------------------------------------------------------------------------
+# STARTUP VALIDATION â€” all five env vars required, no defaults
+# -----------------------------------------------------------------------------
+def require_env_vars() -> tuple[str, str]:
+    """
+    Read all five required environment variables from the environment.
+    Exit immediately with clear fix instructions if any are missing.
+    """
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "").strip()
-    model_uri    = os.getenv("MLFLOW_MODEL_URI", "").strip()
-    errors = []
+    model_uri    = os.getenv("MLFLOW_MODEL_URI",    "").strip()
+    aws_key      = os.getenv("AWS_ACCESS_KEY_ID",   "").strip()
+    aws_secret   = os.getenv("AWS_SECRET_ACCESS_KEY","").strip()
+    aws_region   = os.getenv("AWS_DEFAULT_REGION",  "").strip()
 
+    errors = []
     if not tracking_uri:
         errors.append(
             "  MLFLOW_TRACKING_URI is not set.\n"
-            "  Fix: $env:MLFLOW_TRACKING_URI = 'http://192.168.x.x:5000'"
+            "  Fix: $env:MLFLOW_TRACKING_URI = 'http://localhost:5000'"
         )
     if not model_uri:
         errors.append(
             "  MLFLOW_MODEL_URI is not set.\n"
             "  Fix: $env:MLFLOW_MODEL_URI = 'models:/easyvisa_gbm/Production'"
         )
+    if not aws_key:
+        errors.append(
+            "  AWS_ACCESS_KEY_ID is not set.\n"
+            "  Fix: $env:AWS_ACCESS_KEY_ID = 'AKIA...'"
+        )
+    if not aws_secret:
+        errors.append(
+            "  AWS_SECRET_ACCESS_KEY is not set.\n"
+            "  Fix: $env:AWS_SECRET_ACCESS_KEY = '...'"
+        )
+    if not aws_region:
+        errors.append(
+            "  AWS_DEFAULT_REGION is not set.\n"
+            "  Fix: $env:AWS_DEFAULT_REGION = 'us-east-1'"
+        )
+
     if errors:
         log.error("=" * 65)
-        log.error("API STARTUP FAILED — required env vars missing:")
+        log.error("API STARTUP FAILED â€” required environment variables missing:")
+        log.error("")
         for e in errors:
             log.error(e)
+        log.error("")
         log.error("=" * 65)
         sys.exit(1)
 
     log.info("MLFLOW_TRACKING_URI : %s", tracking_uri)
     log.info("MLFLOW_MODEL_URI    : %s", model_uri)
+    log.info("AWS_DEFAULT_REGION  : %s", aws_region)
+    log.info("AWS_ACCESS_KEY_ID   : %s***", aws_key[:6])
     return tracking_uri, model_uri
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# RESOLVE MODEL URI → RUN_ID
-# ─────────────────────────────────────────────────────────────────────────────
-def resolve_run_id(
-    client: mlflow.tracking.MlflowClient, model_uri: str
-) -> tuple:
-    uri_parts = model_uri.replace("models:/", "").split("/")
-    reg_name  = uri_parts[0]
-    stage_ver = uri_parts[1] if len(uri_parts) > 1 else "Production"
-
-    try:
-        versions = client.get_latest_versions(reg_name, stages=[stage_ver])
-        if versions:
-            return versions[0].run_id, versions[0].version
-    except Exception:
-        pass
-
-    try:
-        v = client.get_model_version(reg_name, stage_ver)
-        return v.run_id, v.version
-    except Exception:
-        pass
-
-    all_versions = client.search_model_versions(f"name='{reg_name}'")
-    if not all_versions:
-        raise ValueError(
-            f"No versions found for model '{reg_name}'. "
-            "Run train.py first."
-        )
-    latest = sorted(all_versions, key=lambda x: int(x.version))[-1]
-    return latest.run_id, latest.version
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MODEL LOADER — MLflow Registry Only
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# MODEL LOADER â€” downloads model + feature_names from MLflow (S3 backend)
+# -----------------------------------------------------------------------------
 def load_from_registry(tracking_uri: str, model_uri: str) -> tuple:
+    """
+    Load the sklearn model AND feature_names exclusively from MLflow registry.
+    No local .pkl fallback. If loading fails, the process exits immediately.
+    """
     mlflow.set_tracking_uri(tracking_uri)
-    log.info("Connecting to MLflow: %s", tracking_uri)
-
     log.info("Loading model from registry: %s", model_uri)
+
     try:
         model = mlflow.sklearn.load_model(model_uri)
     except Exception as e:
-        log.error("FAILED to load model: %s", e)
-        log.error("Fix: python -m mlflow server --host 0.0.0.0 --port 5000")
+        log.error("FAILED to load model from MLflow registry: %s", e)
+        log.error("Possible causes:")
+        log.error("  1. MLflow server not running at %s", tracking_uri)
+        log.error("  2. Model '%s' not registered yet â€” run train.py", model_uri)
+        log.error("  3. No version in 'Production' stage â€” promote in MLflow UI")
         sys.exit(1)
 
-    log.info("✅ Model loaded: %s", type(model).__name__)
+    log.info("âœ… Model loaded: %s", type(model).__name__)
 
-    client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
-    run_id, model_version = resolve_run_id(client, model_uri)
-    log.info("Resolved run_id=%s  version=%s", run_id, model_version)
-
-    feature_artifact_uri = f"runs:/{run_id}/model/feature_names.pkl"
-    log.info("Downloading feature_names: %s", feature_artifact_uri)
-
+    feature_artifact_uri = "runs:/f289aac02a2249119e4c3bf4a8e3ad7e/model/feature_names.pkl"
     try:
-        tmp_dir    = tempfile.mkdtemp(prefix="easyvisa_features_")
+        tmp_dir = tempfile.mkdtemp(prefix="easyvisa_features_")
         local_path = mlflow.artifacts.download_artifacts(
             artifact_uri=feature_artifact_uri,
             dst_path=tmp_dir,
@@ -195,69 +197,83 @@ def load_from_registry(tracking_uri: str, model_uri: str) -> tuple:
         feature_names = joblib.load(local_path)
     except Exception as e:
         log.error("FAILED to download feature_names.pkl: %s", e)
-        log.error("Fix: python src/train.py --data-path data/EasyVisa.csv")
+        log.error("  artifact_uri: %s", feature_artifact_uri)
+        log.error("  Re-run train.py to create a new version with feature_names logged.")
         sys.exit(1)
 
-    log.info("✅ feature_names loaded: %d features", len(feature_names))
+    log.info("âœ… feature_names loaded: %d features", len(feature_names))
 
-    model_source = (
-        f"MLflow Registry | {model_uri} | "
-        f"version={model_version} | run_id={run_id[:8]}..."
-    )
-    return model, feature_names, model_source, run_id, str(model_version)
+    # Retrieve run metadata for auditability
+    try:
+        client    = mlflow.tracking.MlflowClient()
+        uri_parts = model_uri.replace("models:/", "").split("/")
+        reg_name  = uri_parts[0]
+        stage     = uri_parts[1] if len(uri_parts) > 1 else "latest"
+        versions  = client.get_latest_versions(reg_name, stages=[stage])
+        if versions:
+            run_id, model_ver = versions[0].run_id, versions[0].version
+        else:
+            all_v  = client.search_model_versions(f"name='{reg_name}'")
+            latest = sorted(all_v, key=lambda x: int(x.version))[-1]
+            run_id, model_ver = latest.run_id, latest.version
+    except Exception:
+        run_id, model_ver = "unknown", "unknown"
+
+    model_source = f"MLflow Registry | {model_uri} | version={model_ver} | run_id={run_id[:8]}..."
+    log.info("âœ… Model source: %s", model_source)
+    return model, feature_names, model_source, run_id, str(model_ver)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STARTUP
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# STARTUP â€” runs once when uvicorn imports this module
+# -----------------------------------------------------------------------------
 TRACKING_URI, MODEL_URI = require_env_vars()
-
 model, feature_names, MODEL_SOURCE, RUN_ID, MODEL_VERSION = load_from_registry(
     TRACKING_URI, MODEL_URI
 )
 
 log.info("=" * 65)
-log.info("✅ API STARTUP COMPLETE")
+log.info("âœ… V9 API STARTUP COMPLETE")
 log.info("   Model type    : %s", type(model).__name__)
 log.info("   Model version : %s", MODEL_VERSION)
 log.info("   Features      : %d", len(feature_names))
-log.info("   Source        : %s", MODEL_SOURCE)
+log.info("   Inference log : %s", INFERENCE_LOG_PATH)
+log.info("   Artifact store: S3 (via MLflow)")
 log.info("   Docs          : http://localhost:8000/docs")
-log.info("   Metrics       : http://localhost:8000/metrics")
 log.info("=" * 65)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FASTAPI APP
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# FASTAPI APPLICATION
+# -----------------------------------------------------------------------------
 app = FastAPI(
-    title="Visa Approval Prediction API  (V6 — Registry-Only + Monitoring)",
+    title="Visa Approval Prediction API  (V9 â€” S3 Artifact Store + Inference Logging)",
     description=(
         "Predicts US visa approval probability using a GradientBoosting model "
         "trained on OFLC historical data (25,480 applications). "
-        "Model and feature schema loaded exclusively from MLflow Model Registry. "
-        "Prometheus metrics available at /metrics."
+        "Model and feature schema loaded exclusively from MLflow Model Registry (S3 backend). "
+        "V9: Every prediction input logged to CSV for live Evidently drift detection."
     ),
-    version="4.0.0",
+    version="9.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# INPUT SCHEMA
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# INPUT SCHEMA â€” Pydantic v2 BaseModel
+# -----------------------------------------------------------------------------
 class VisaApplication(BaseModel):
-    continent:             str
-    education_of_employee: str
-    has_job_experience:    str
-    requires_job_training: str
-    no_of_employees:       int
-    yr_of_estab:           int
-    region_of_employment:  str
-    prevailing_wage:       float
-    unit_of_wage:          str
-    full_time_position:    str
+    continent:             str    # "Asia" | "Europe" | "Africa" | "North America" | "South America" | "Oceania"
+    education_of_employee: str    # "High School" | "Bachelor's" | "Master's" | "Doctorate"
+    has_job_experience:    str    # "Y" | "N"
+    requires_job_training: str    # "Y" | "N"
+    no_of_employees:       int    # Company headcount (positive integer)
+    yr_of_estab:           int    # Year company was established (e.g. 2005)
+    region_of_employment:  str    # "Northeast" | "South" | "Midwest" | "West" | "Island"
+    prevailing_wage:       float  # Wage offered in USD (e.g. 85000.0)
+    unit_of_wage:          str    # "Yearly" | "Monthly" | "Weekly" | "Hourly"
+    full_time_position:    str    # "Y" | "N"
 
     model_config = {
         "json_schema_extra": {
@@ -277,24 +293,54 @@ class VisaApplication(BaseModel):
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# V9: INFERENCE LOGGING HELPER
+# -----------------------------------------------------------------------------
+def log_inference_input(application: VisaApplication) -> None:
+    """
+    Append the raw prediction input to monitoring/inference_log.csv.
 
-@app.get("/", tags=["Status"])
-def home():
+    Non-fatal: wrapped in try/except so logging failure never breaks predictions.
+    Both visa-api and evidently-service mount ./monitoring as a shared volume,
+    so evidently_service.py can read what api.py writes here.
+    """
+    try:
+        log_dir = Path(INFERENCE_LOG_PATH).parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        write_header = not os.path.exists(INFERENCE_LOG_PATH)
+
+        with open(INFERENCE_LOG_PATH, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=application.model_dump().keys())
+            if write_header:
+                writer.writeheader()
+            writer.writerow(application.model_dump())
+
+    except Exception as log_err:
+        log.warning("Inference logging failed (non-fatal): %s", log_err)
+
+
+# -----------------------------------------------------------------------------
+# ENDPOINTS
+# -----------------------------------------------------------------------------
+
+@app.get("/", tags=["Health"])
+def root():
+    """Root endpoint â€” confirms the API is alive."""
     return {
-        "message": "Visa Approval Prediction API  (V6 — Registry-Only + Monitoring)",
+        "message": "Visa Approval Prediction API",
         "status":  "running",
-        "version": "4.0.0",
+        "version": "9.0.0",
         "docs":    "/docs",
-        "metrics": "/metrics",
     }
 
 
-@app.get("/health", tags=["Status"])
+@app.get("/health", tags=["Health"])
 def health():
-    api_requests.labels(endpoint="/health", status="success").inc()
+    """
+    Detailed health check â€” used by Docker HEALTHCHECK and Kubernetes probes.
+    Returns model version, run_id, artifact source, and inference log path.
+    """
     return {
         "status":        "healthy",
         "model_source":  MODEL_SOURCE,
@@ -303,24 +349,51 @@ def health():
         "run_id":        RUN_ID,
         "n_features":    len(feature_names),
         "tracking_uri":  TRACKING_URI,
+        "inference_log": INFERENCE_LOG_PATH,
     }
 
 
 @app.post("/predict", tags=["Prediction"])
 def predict_visa(application: VisaApplication):
+    """
+    Main prediction endpoint.
+
+    Preprocessing pipeline (must match train.py exactly):
+      Step 0: Log raw input to CSV for Evidently drift detection (V9 â€” non-fatal)
+      Step 1: Convert Pydantic model -> single-row DataFrame
+      Step 2: pd.get_dummies(drop_first=True) â€” same as train.py
+      Step 3: Add missing columns (categories absent in this row -> fill with 0)
+      Step 4: Reorder to exactly match training column order (feature_names)
+      Step 5: model.predict() + model.predict_proba()
+
+    Returns:
+      prediction            : "Certified" or "Denied"
+      probability_certified : float
+      probability_denied    : float
+      confidence            : float
+      model_version         : str
+    """
     start_time = time.time()
 
     try:
-        # ── Preprocessing ─────────────────────────────────────────
-        input_df = pd.DataFrame([application.model_dump()])
-        encoded  = pd.get_dummies(input_df, drop_first=True)
+        # Step 0 (V9): Log raw input for drift detection â€” non-fatal
+        log_inference_input(application)
 
+        # Step 1: Convert request to DataFrame
+        input_df = pd.DataFrame([application.model_dump()])
+
+        # Step 2: One-hot encode â€” MUST use same settings as train.py
+        encoded = pd.get_dummies(input_df, drop_first=True)
+
+        # Step 3: Add columns that exist in training but not in this single row
         for col in feature_names:
             if col not in encoded.columns:
                 encoded[col] = 0
+
+        # Step 4: Reorder to exactly match training column order
         encoded = encoded[feature_names]
 
-        # ── Predict ───────────────────────────────────────────────
+        # Step 5: Run inference
         pred  = model.predict(encoded)[0]
         proba = model.predict_proba(encoded)[0]
 
@@ -332,49 +405,35 @@ def predict_visa(application: VisaApplication):
             "model_version":         MODEL_VERSION,
         }
 
-        # ── Metrics ───────────────────────────────────────────────
         prediction_counter.labels(prediction=result["prediction"]).inc()
-        model_confidence.observe(result["confidence"])
         api_requests.labels(endpoint="/predict", status="success").inc()
-        _update_certified_ratio(result["prediction"])
-
-        # ── Structured log ────────────────────────────────────────
-        log.info(
-            "PREDICT | continent=%-12s | result=%-9s | "
-            "confidence=%.4f | latency=%.3fs",
-            application.continent,
-            result["prediction"],
-            result["confidence"],
-            time.time() - start_time,
-        )
 
         return result
 
     except KeyError as e:
         api_requests.labels(endpoint="/predict", status="error").inc()
-        log.error("Feature mismatch: %s", e)
         raise HTTPException(
             status_code=422,
-            detail=f"Feature mismatch — '{e}' not found. Check preprocessing.",
+            detail=(
+                f"Feature mismatch â€” column '{e}' not found. "
+                "Preprocessing in api.py must match train.py exactly "
+                "(both use pd.get_dummies with drop_first=True)."
+            ),
         )
     except Exception as e:
         api_requests.labels(endpoint="/predict", status="error").inc()
-        log.error("Prediction failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
-
+        log.error("Prediction error: %s", str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {str(e)}",
+        )
     finally:
         prediction_latency.observe(time.time() - start_time)
 
 
-@app.get("/metrics", tags=["Monitoring"])
-def metrics():
-    """Prometheus metrics scraping endpoint."""
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
 @app.get("/model-info", tags=["Model"])
 def model_info():
-    """Full model metadata for auditing and CI/CD verification."""
+    """Full model metadata â€” for auditing, CI/CD checks, and debugging."""
     return {
         "model_type":    type(model).__name__,
         "model_source":  MODEL_SOURCE,
@@ -384,5 +443,18 @@ def model_info():
         "model_uri":     MODEL_URI,
         "n_features":    len(feature_names),
         "features":      feature_names,
-        "api_version":   "4.0.0",
+        "api_version":   "9.0.0",
     }
+
+
+@app.get("/metrics", tags=["Monitoring"])
+def metrics():
+    """
+    Prometheus metrics scrape endpoint.
+
+    Exposes:
+      predictions_total{prediction="Certified"|"Denied"}
+      prediction_latency_seconds (histogram)
+      api_requests_total{endpoint, status}
+    """
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
