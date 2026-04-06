@@ -187,6 +187,7 @@ def load_from_registry(tracking_uri: str, model_uri: str) -> tuple:
 
     log.info("âœ… Model loaded: %s", type(model).__name__)
 
+    #feature_artifact_uri = "runs:/f289aac02a2249119e4c3bf4a8e3ad7e/model/feature_names.pkl"
     feature_artifact_uri = "runs:/f289aac02a2249119e4c3bf4a8e3ad7e/model/feature_names.pkl"
     try:
         tmp_dir = tempfile.mkdtemp(prefix="easyvisa_features_")
@@ -458,3 +459,5 @@ def metrics():
       api_requests_total{endpoint, status}
     """
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+

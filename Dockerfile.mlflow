@@ -1,0 +1,4 @@
+﻿FROM python:3.10-slim
+RUN pip install mlflow==3.10.1 boto3 --no-cache-dir
+EXPOSE 5000
+ENTRYPOINT ["mlflow"]

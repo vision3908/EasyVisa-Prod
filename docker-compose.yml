@@ -1,46 +1,7 @@
+﻿
 # docker-compose.yml — EasyVisa Full Observability Stack (V9)
-#
-# Services:
-#   visa-api           : FastAPI prediction server (port 8000)
-#   evidently-service  : Live drift metrics service (port 8085)
-#   prometheus         : Metrics scraper (port 9090)
-#   grafana            : Dashboard visualizer (port 3000)
-#
-# NOTE: No 'version:' field — obsolete in Docker Compose v2+
-#
-# Prerequisites:
-#   1. MLflow server running separately (Window 1):
-#      $env:AWS_ACCESS_KEY_ID     = "AKIA..."
-#      $env:AWS_SECRET_ACCESS_KEY = "..."
-#      $env:AWS_DEFAULT_REGION    = "us-east-1"
-#      python -m mlflow server \
-#          --backend-store-uri sqlite:///mlflow.db \
-#          --default-artifact-root s3://easyvisa-mlflow-vision-2025/mlflow-artifacts \
-#          --host 0.0.0.0 --port 5000
-#
-#   2. AWS credentials exported in your shell (used by visa-api at runtime):
-#      $env:AWS_ACCESS_KEY_ID     = "AKIA..."
-#      $env:AWS_SECRET_ACCESS_KEY = "..."
-#      $env:AWS_DEFAULT_REGION    = "us-east-1"
-#
-#   3. Update MLFLOW_TRACKING_URI below to your machine's actual LAN IPv4
-#      (not localhost / host.docker.internal — find it with: ipconfig)
-#
-# Start everything:
-#   docker build --no-cache -t visa-api:v9 .
-#   docker-compose up -d
-#
-# Verify:
-#   docker-compose ps
-#
-# Service URLs:
-#   API Swagger       : http://localhost:8000/docs
-#   API Health        : http://localhost:8000/health
-#   API Metrics       : http://localhost:8000/metrics
-#   Evidently Metrics : http://localhost:8085/metrics
-#   Prometheus UI     : http://localhost:9090
-#   Prometheus Targets: http://localhost:9090/targets
-#   Grafana           : http://localhost:3000  (admin / easyvisa123)
+# MLflow runs locally (not in Docker) — start separately before docker compose up
+# MLFLOW_TRACKING_URI points to your Windows host IP: 192.168.12.157
 
 services:
 
@@ -53,17 +14,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # ⚠️  Replace with your machine's actual LAN IPv4 (ipconfig → IPv4 Address)
-      # Do NOT use localhost or host.docker.internal — Docker containers can't
-      # resolve those to the host MLflow process (DNS rebinding protection).
-      MLFLOW_TRACKING_URI: "http://192.168.12.158:5000"
+      MLFLOW_TRACKING_URI: "http://192.168.12.157:5000"
       MLFLOW_MODEL_URI: "models:/easyvisa_gbm/Production"
       AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
       AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
       AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
     volumes:
-      # Shared monitoring folder — api.py writes inference_log.csv here,
-      # evidently-service reads it for drift computation
       - ./monitoring:/app/monitoring
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -74,10 +30,9 @@ services:
       retries: 3
     networks:
       - monitoring
+    restart: unless-stopped
 
   # ── Evidently Live Drift Service ───────────────────────────────────────────
-  # Reads inference_log.csv → computes drift vs EasyVisa.csv baseline →
-  # exposes Prometheus metrics on :8085/metrics every 60s
   evidently-service:
     build:
       context: .
@@ -85,9 +40,7 @@ services:
     ports:
       - "8085:8085"
     volumes:
-      # Shared with visa-api — reads inference_log.csv written by api.py
       - ./monitoring:/app/monitoring
-      # Reference dataset for drift baseline (read-only)
       - ./data:/app/data:ro
     networks:
       - monitoring
@@ -96,8 +49,6 @@ services:
     restart: unless-stopped
 
   # ── Prometheus ─────────────────────────────────────────────────────────────
-  # Scrapes /metrics from visa-api (8000) and evidently-service (8085)
-  # Retains 15 days of time-series data in a named volume
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -117,8 +68,6 @@ services:
       - evidently-service
 
   # ── Grafana ────────────────────────────────────────────────────────────────
-  # Dashboard 1: EasyVisa API — Production Monitoring
-  # Dashboard 2: EasyVisa — Data Drift Monitoring
   grafana:
     image: grafana/grafana:latest
     ports:
@@ -136,12 +85,10 @@ services:
     depends_on:
       - prometheus
 
-# ── Named volumes — survive docker-compose down ────────────────────────────
 volumes:
   prometheus_data:
   grafana_data:
 
-# ── Shared network — all services resolve each other by service name ────────
 networks:
   monitoring:
     driver: bridge
