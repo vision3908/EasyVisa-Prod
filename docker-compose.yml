@@ -1,20 +1,43 @@
-﻿
-# docker-compose.yml — EasyVisa Full Observability Stack (V9)
-# MLflow runs locally (not in Docker) — start separately before docker compose up
-# MLFLOW_TRACKING_URI points to your Windows host IP: 192.168.12.157
+﻿services:
 
-services:
+  mlflow:
+    image: python:3.10-slim
+    entrypoint: []
+    command:
+      - "sh"
+      - "-c"
+      - "pip install mlflow==3.10.1 boto3 --quiet && mlflow server --backend-store-uri sqlite:////mlflow/mlflow.db --default-artifact-root s3://easyvisa-mlflow-vision-2025/mlflow-artifacts --host 0.0.0.0 --port 5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlflow.db:/mlflow/mlflow.db
+    environment:
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
+      MLFLOW_ALLOW_HOST_OVERRIDE: "true"
+      MLFLOW_SERVER_ALLOWED_HOSTS: "*"
+    networks:
+      - monitoring
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+        "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 15s
+      start_period: 120s
+      retries: 5
 
-  # ── FastAPI Prediction API ─────────────────────────────────────────────────
+
   visa-api:
-    image: visa-api:v9
+    image: visa-api:v10
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
-      MLFLOW_TRACKING_URI: "http://192.168.12.157:5000"
+      MLFLOW_TRACKING_URI: "http://mlflow:5000"
       MLFLOW_MODEL_URI: "models:/easyvisa_gbm/Production"
       AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
       AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
@@ -26,13 +49,14 @@ services:
         "import urllib.request, json, sys; resp = urllib.request.urlopen('http://localhost:8000/health', timeout=10); data = json.loads(resp.read()); sys.exit(0) if data.get('status') == 'healthy' else sys.exit(1)"]
       interval: 30s
       timeout: 15s
-      start_period: 90s
-      retries: 3
+      start_period: 120s
+      retries: 5
     networks:
       - monitoring
-    restart: unless-stopped
+    depends_on:
+      mlflow:
+        condition: service_healthy
 
-  # ── Evidently Live Drift Service ───────────────────────────────────────────
   evidently-service:
     build:
       context: .
@@ -48,7 +72,6 @@ services:
       - visa-api
     restart: unless-stopped
 
-  # ── Prometheus ─────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -67,7 +90,6 @@ services:
       - visa-api
       - evidently-service
 
-  # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest
     ports:

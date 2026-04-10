@@ -1,0 +1,34 @@
+# k8s/evidently-deployment.yaml — Evidently drift service on EKS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evidently-service
+  namespace: easyvisa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evidently-service
+  template:
+    metadata:
+      labels:
+        app: evidently-service
+    spec:
+      containers:
+      - name: evidently-service
+        image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-evidently:latest
+        ports:
+        - containerPort: 8085
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: evidently-service
+  namespace: easyvisa
+spec:
+  type: ClusterIP
+  selector:
+    app: evidently-service
+  ports:
+  - port: 8085
+    targetPort: 8085

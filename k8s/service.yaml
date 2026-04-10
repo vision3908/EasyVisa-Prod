@@ -1,0 +1,16 @@
+# k8s/service.yaml — Exposes visa-api via AWS Network Load Balancer (public URL)
+apiVersion: v1
+kind: Service
+metadata:
+  name: visa-api-service
+  namespace: easyvisa
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  type: LoadBalancer
+  selector:
+    app: visa-api
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8000
