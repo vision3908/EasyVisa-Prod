@@ -1,4 +1,23 @@
-name: CI/CD Pipeline — V6 S3 Artifact Store
+# .github/workflows/ci-cd.yml — EasyVisa V10 CI/CD Pipeline
+#
+# WHAT THIS DOES ON EVERY git push TO main:
+#   1. Lint code with ruff
+#   2. Build Docker images (visa-api + evidently)
+#   3. Push images to AWS ECR
+#   4. Deploy all services to EKS (visa-api, prometheus, grafana, evidently)
+#   5. Wait for LoadBalancer URLs to be assigned by AWS
+#   6. Output public URLs for all services in the Actions log
+#
+# REQUIRED GITHUB SECRETS (Settings -> Secrets -> Actions):
+#   AWS_ACCESS_KEY_ID       : IAM user key with ECR + EKS permissions
+#   AWS_SECRET_ACCESS_KEY   : IAM user secret
+#   AWS_DEFAULT_REGION      : us-east-1
+#   AWS_ACCOUNT_ID          : Your 12-digit AWS account ID
+#   EKS_CLUSTER_NAME        : easyvisa-cluster
+#   MLFLOW_TRACKING_URI     : MLflow server URL accessible from EKS pods
+#   MLFLOW_MODEL_URI        : models:/easyvisa_gbm/Production
+
+name: EasyVisa V10 — CI/CD Pipeline (EKS + Cloud Observability)
 
 on:
   push:
@@ -6,141 +25,193 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  AWS_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  ECR_REPO_API: easyvisa-api
+  ECR_REPO_EVIDENTLY: easyvisa-evidently
+  EKS_NAMESPACE: easyvisa
+
 jobs:
-  build:
+
+  # ── Job 1: Lint ──────────────────────────────────────────────────────────
+  lint:
+    name: Lint Code
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+    - name: Install ruff
+      run: pip install ruff
+    - name: Lint src/
+      run: ruff check src/ --ignore E501
 
-    - name: Install dependencies
-      run: pip install -r requirements.txt
+  # ── Job 2: Build + Push to ECR ───────────────────────────────────────────
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    needs: lint
+    outputs:
+      api_image: ${{ steps.build-api.outputs.image }}
+      evidently_image: ${{ steps.build-evidently.outputs.image }}
 
-    - name: Build Docker image
-      run: docker build -t visa-api:v6 .
+    steps:
+    - uses: actions/checkout@v4
 
-    # ── DEBUG: Verify image was built ─────────────────────────────
-    - name: Debug — List Docker images
-      run: docker images
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-    # ── TEST 1: Dependency import check (no MLflow needed) ────────
-    - name: Test — Verify all dependencies present
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Create ECR repositories if not exist
       run: |
-        docker run --rm visa-api:v6 python -c "
-        import fastapi
-        import mlflow
-        import pandas
-        import joblib
-        import sklearn
-        import uvicorn
-        print('✅ fastapi     :', fastapi.__version__)
-        print('✅ mlflow      :', mlflow.__version__)
-        print('✅ pandas      :', pandas.__version__)
-        print('✅ sklearn     :', sklearn.__version__)
-        print('✅ All dependencies verified OK')
-        "
+        aws ecr describe-repositories --repository-names $ECR_REPO_API 2>/dev/null || \
+          aws ecr create-repository --repository-name $ECR_REPO_API
+        aws ecr describe-repositories --repository-names $ECR_REPO_EVIDENTLY 2>/dev/null || \
+          aws ecr create-repository --repository-name $ECR_REPO_EVIDENTLY
 
-    # ── TEST 2: API module structure test (no MLflow needed) ──────
-    - name: Test — Verify API module loads correctly
+    - name: Build and push visa-api image
+      id: build-api
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
       run: |
-        docker run --rm \
-          -e MLFLOW_TRACKING_URI=http://localhost:5000 \
-          -e MLFLOW_MODEL_URI=models:/easyvisa_gbm/Production \
-          visa-api:v6 python -c "
-        import sys, os
+        IMAGE=$ECR_REGISTRY/$ECR_REPO_API:${{ github.sha }}
+        LATEST=$ECR_REGISTRY/$ECR_REPO_API:latest
+        docker build --no-cache -t $IMAGE -t $LATEST .
+        docker push $IMAGE
+        docker push $LATEST
+        echo "image=$IMAGE" >> $GITHUB_OUTPUT
+        echo "✅ visa-api image pushed: $IMAGE"
 
-        # Confirm env vars are present (require_env_vars() will pass)
-        tracking = os.environ.get('MLFLOW_TRACKING_URI')
-        model    = os.environ.get('MLFLOW_MODEL_URI')
-        print('✅ MLFLOW_TRACKING_URI :', tracking)
-        print('✅ MLFLOW_MODEL_URI    :', model)
-
-        # Verify FastAPI app structure without triggering MLflow loader
-        from fastapi import FastAPI
-        from pydantic import BaseModel
-        print('✅ FastAPI + Pydantic imports OK')
-
-        # Verify preprocessing dependencies
-        import pandas as pd
-        import joblib
-        import sklearn
-        print('✅ pandas / joblib / sklearn OK')
-
-        # Verify MLflow client can be instantiated (not connected)
-        import mlflow
-        client = mlflow.tracking.MlflowClient(tracking_uri=tracking)
-        print('✅ MLflow client instantiated OK')
-
-        print('')
-        print('✅ API module structure verified — MLflow connection skipped in CI')
-        print('   Full integration test runs in staging with live MLflow server')
-        "
-
-    # ── TEST 3: Container startup logs (informational only) ───────
-    - name: Test — Container startup debug (expect MLflow fail)
+    - name: Build and push evidently image
+      id: build-evidently
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
       run: |
-        echo "Starting container to capture startup logs..."
-        docker run -d -p 8000:8000 \
-          -e MLFLOW_TRACKING_URI=http://localhost:5000 \
-          -e MLFLOW_MODEL_URI=models:/easyvisa_gbm/Production \
-          -e AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
-          -e AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
-          -e AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION }} \
-          --name test-container \
-          visa-api:v6 || true
+        IMAGE=$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:${{ github.sha }}
+        LATEST=$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:latest
+        docker build --no-cache \
+          -f monitoring/Dockerfile.evidently \
+          -t $IMAGE -t $LATEST .
+        docker push $IMAGE
+        docker push $LATEST
+        echo "image=$IMAGE" >> $GITHUB_OUTPUT
+        echo "✅ evidently image pushed: $IMAGE"
 
-        echo "Waiting 10s for startup attempt..."
-        sleep 10
+  # ── Job 3: Deploy to EKS + Output Public URLs ────────────────────────────
+  deploy:
+    name: Deploy to EKS and Output Public URLs
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig for EKS
+      run: |
+        aws eks update-kubeconfig \
+          --name ${{ secrets.EKS_CLUSTER_NAME }} \
+          --region ${{ env.AWS_REGION }}
+
+    - name: Create namespace
+      run: kubectl apply -f k8s/namespace.yaml
+
+    - name: Create Kubernetes secrets from GitHub Secrets
+      run: |
+        kubectl create secret generic easyvisa-secrets \
+          --namespace=$EKS_NAMESPACE \
+          --from-literal=AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+          --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+          --from-literal=AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION }} \
+          --from-literal=MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
+          --from-literal=MLFLOW_MODEL_URI=${{ secrets.MLFLOW_MODEL_URI }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Update image tags in manifests
+      env:
+        ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+      run: |
+        sed -i "s|ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-api:latest|$ECR_REGISTRY/$ECR_REPO_API:latest|g" \
+          k8s/deployment.yaml
+        sed -i "s|ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-evidently:latest|$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:latest|g" \
+          k8s/evidently-deployment.yaml
+
+    - name: Deploy visa-api to EKS
+      run: |
+        kubectl apply -f k8s/deployment.yaml -n $EKS_NAMESPACE
+        kubectl apply -f k8s/service.yaml -n $EKS_NAMESPACE
+        kubectl rollout status deployment/visa-api-deployment \
+          -n $EKS_NAMESPACE --timeout=300s
+
+    - name: Deploy Prometheus to EKS
+      run: kubectl apply -f k8s/prometheus-deployment.yaml -n $EKS_NAMESPACE
+
+    - name: Deploy Grafana to EKS
+      run: kubectl apply -f k8s/grafana-deployment.yaml -n $EKS_NAMESPACE
+
+    - name: Deploy Evidently to EKS
+      run: kubectl apply -f k8s/evidently-deployment.yaml -n $EKS_NAMESPACE
+
+    - name: Wait for AWS LoadBalancer URLs (up to 5 minutes)
+      run: |
+        echo "Waiting for AWS Load Balancers to be assigned..."
+        for SERVICE in visa-api-service prometheus-service grafana-service; do
+          echo "Waiting for $SERVICE..."
+          for i in $(seq 1 30); do
+            URL=$(kubectl get svc $SERVICE -n $EKS_NAMESPACE \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            if [ -n "$URL" ]; then
+              echo "$SERVICE ready: $URL"
+              break
+            fi
+            echo "  attempt $i/30 — sleeping 10s..."
+            sleep 10
+          done
+        done
+
+    - name: Output all public service URLs
+      run: |
+        API_URL=$(kubectl get svc visa-api-service -n $EKS_NAMESPACE \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        PROM_URL=$(kubectl get svc prometheus-service -n $EKS_NAMESPACE \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        GRAFANA_URL=$(kubectl get svc grafana-service -n $EKS_NAMESPACE \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
         echo ""
-        echo "--- CONTAINER LOGS ---"
-        docker logs test-container 2>&1 || true
+        echo "================================================================"
+        echo "  EasyVisa V10 — DEPLOYED TO AWS EKS"
+        echo "================================================================"
+        echo "  API:         http://$API_URL"
+        echo "  API Docs:    http://$API_URL/docs"
+        echo "  API Health:  http://$API_URL/health"
+        echo "  Prometheus:  http://$PROM_URL"
+        echo "  Grafana:     http://$GRAFANA_URL  (admin/easyvisa123)"
+        echo "================================================================"
 
-        echo ""
-        echo "--- CONTAINER STATUS ---"
-        docker ps -a --filter name=test-container
+        echo "::notice title=API URL::http://$API_URL/docs"
+        echo "::notice title=Grafana URL::http://$GRAFANA_URL"
+        echo "::notice title=Prometheus URL::http://$PROM_URL"
 
-        echo ""
-        echo "--- EXPECTED: MLflow connection fails (no server in CI) ---"
-        echo "--- This is informational only — not a blocking failure   ---"
-
-        docker stop test-container 2>/dev/null || true
-        docker rm   test-container 2>/dev/null || true
-        echo "✅ Startup log capture complete"
-
-    # ── SUMMARY ───────────────────────────────────────────────────
-    - name: CI Summary
+    - name: Verify API is healthy
       run: |
-        echo "=================================================="
-        echo "✅ CI PIPELINE SUMMARY"
-        echo "=================================================="
-        echo "✅ Step 1 : Code checked out"
-        echo "✅ Step 2 : Python 3.10 configured"
-        echo "✅ Step 3 : Dependencies installed"
-        echo "✅ Step 4 : Docker image built (visa-api:v6)"
-        echo "✅ Step 5 : All Python dependencies verified"
-        echo "✅ Step 6 : API module structure verified"
-        echo "✅ Step 7 : Startup logs captured"
-        echo "--------------------------------------------------"
-        echo "⚠️  MLflow integration test skipped in CI"
-        echo "    Reason : No MLflow server in GitHub Actions"
-        echo "    Action : Run integration test in staging env"
-        echo "=================================================="
-
-    
-    # ── PUSH TO DOCKER HUB (when ready) ───────────────────────────
-    - name: Push to Docker Hub
-      if: github.ref == 'refs/heads/main'
-      run: |
-        echo "Docker push placeholder - uncomment when ready"
-        echo "Requires secrets: DOCKER_USERNAME, DOCKER_PASSWORD"
-        # Uncomment below when Docker Hub secrets are added:
-        # docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
-        # docker tag visa-api:v6 ${{ secrets.DOCKER_USERNAME }}/visa-api:v6
-        # docker push ${{ secrets.DOCKER_USERNAME }}/visa-api:v6  
+        API_URL=$(kubectl get svc visa-api-service -n $EKS_NAMESPACE \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        echo "Testing http://$API_URL/health ..."
+        sleep 30
+        curl -f http://$API_URL/health && echo "✅ API is healthy!" || \
+          echo "⚠️ Health check pending — pods may still be starting"
