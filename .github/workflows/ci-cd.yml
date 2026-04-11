@@ -1,5 +1,4 @@
 # .github/workflows/ci-cd.yml — EasyVisa V10 CI/CD Pipeline
-#
 # WHAT THIS DOES ON EVERY git push TO main:
 #   1. Lint code with ruff
 #   2. Build Docker images (visa-api + evidently)
