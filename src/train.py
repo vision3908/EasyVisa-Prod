@@ -1,9 +1,15 @@
 """
 train.py — EasyVisa Visa Approval Prediction (V6 — S3 Artifact Store)
 """
-import argparse, logging, os, sys, warnings
-import joblib, mlflow, mlflow.sklearn
-import numpy as np, pandas as pd
+import argparse
+import logging
+import os
+import sys
+import warnings
+import joblib
+import mlflow
+import mlflow.sklearn
+import pandas as pd
 from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import RandomUnderSampler
 from sklearn import metrics
@@ -218,7 +224,7 @@ def train(
         log_feature_names_artifact(feature_names, artifact_subdir="model")
 
         input_example = X_val.head(5)
-        model_info = mlflow.sklearn.log_model(
+        mlflow.sklearn.log_model(
             sk_model=model,
             artifact_path="model",
             input_example=input_example,
