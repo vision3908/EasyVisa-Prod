@@ -8,7 +8,7 @@ metadata:
     app: visa-api
     version: v10
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: visa-api

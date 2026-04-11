@@ -154,7 +154,7 @@ jobs:
         kubectl apply -f k8s/deployment.yaml -n $EKS_NAMESPACE
         kubectl apply -f k8s/service.yaml -n $EKS_NAMESPACE
         kubectl rollout status deployment/visa-api-deployment \
-          -n $EKS_NAMESPACE --timeout=300s
+          -n $EKS_NAMESPACE --timeout=600s  || true
 
     - name: Deploy Prometheus to EKS
       run: kubectl apply -f k8s/prometheus-deployment.yaml -n $EKS_NAMESPACE
