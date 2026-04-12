@@ -148,6 +148,11 @@ jobs:
           k8s/deployment.yaml
         sed -i "s|ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-evidently:latest|$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:latest|g" \
           k8s/evidently-deployment.yaml
+    - name: Deploy MLflow to EKS
+      run: |
+        kubectl apply -f k8s/mlflow-deployment.yaml
+        kubectl rollout status deployment/mlflow-deployment -n easyvisa --timeout=300s
+      
 
     - name: Deploy visa-api to EKS
       run: |
