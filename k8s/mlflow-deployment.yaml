@@ -19,7 +19,7 @@ spec:
         command:
           - "sh"
           - "-c"
-          - "pip install mlflow==2.19.0 boto3 --quiet && mlflow server --backend-store-uri sqlite:////mlflow/mlflow.db --default-artifact-root s3://easyvisa-mlflow-vision-2025/mlflow-artifacts --host 0.0.0.0 --port 5000"
+          - "pip install mlflow==3.10.1 boto3 --quiet && mlflow server --backend-store-uri sqlite:////tmp/mlflow.db --default-artifact-root s3://easyvisa-mlflow-vision-2025/mlflow-artifacts --host 0.0.0.0 --port 5000"
         ports:
         - containerPort: 5000
         env:
@@ -51,7 +51,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: mlflow-service
+  name: mlflow
   namespace: easyvisa
 spec:
   type: ClusterIP
