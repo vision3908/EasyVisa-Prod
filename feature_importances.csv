@@ -1,22 +1,22 @@
 feature,importance
-education_of_employee_High School,0.3379246898965757
-region_of_employment_West,0.10568988596588245
-prevailing_wage,0.08665918397784589
-region_of_employment_South,0.08064941114283722
-region_of_employment_Northeast,0.06918862983499627
-continent_Asia,0.0664482826519744
-continent_North America,0.05672371298746403
-has_job_experience_Y,0.03877805250809764
-region_of_employment_Midwest,0.03785119486154893
-education_of_employee_Master's,0.03440051293479214
-continent_Europe,0.03322389283435105
-education_of_employee_Doctorate,0.014279398821325751
-continent_South America,0.013094454770197201
-yr_of_estab,0.010614534557618497
-unit_of_wage_Year,0.008118417147765901
-no_of_employees,0.0030619342704370418
-requires_job_training_Y,0.0015049074419640326
-continent_Oceania,0.0010133871028321767
-unit_of_wage_Week,0.0007015346779151764
-full_time_position_Y,7.398161357852284e-05
-unit_of_wage_Month,0.0
+education_of_employee_High School,0.28358039696798404
+region_of_employment_West,0.11158446416671101
+region_of_employment_Northeast,0.09711533701974413
+continent_Asia,0.08839311567751953
+region_of_employment_South,0.074932725448352
+prevailing_wage,0.07214966164280376
+continent_North America,0.05683243324525724
+has_job_experience_Y,0.040086480668815594
+region_of_employment_Midwest,0.0329614517695364
+education_of_employee_Master's,0.028958275535246047
+continent_Europe,0.023338279256756973
+education_of_employee_Doctorate,0.01974246769853035
+continent_South America,0.017219717096507384
+yr_of_estab,0.016193141363835057
+unit_of_wage_Year,0.014682905759449808
+no_of_employees,0.007843999998182628
+full_time_position_Y,0.006720973814136636
+requires_job_training_Y,0.0043612094303169145
+continent_Oceania,0.0026216447383583387
+unit_of_wage_Week,0.0005505508962811397
+unit_of_wage_Month,0.00013076780567492348
