@@ -16,10 +16,14 @@ spec:
       containers:
       - name: mlflow
         image: python:3.10-slim
-        command:
-          - "sh"
-          - "-c"
-          - - "pip install mlflow==3.10.1 boto3 --quiet && mlflow server --backend-store-uri sqlite:////tmp/mlflow.db --artifacts-destination s3://easyvisa-mlflow-vision-2025/mlflow-artifacts --host 0.0.0.0 --port 5000"
+        command: ["/bin/sh", "-c"]
+        - |
+          pip install mlflow==3.10.1 boto3 --quiet
+          mlflow server \
+            --backend-store-uri sqlite:////tmp/mlflow.db \
+            --artifacts-destination s3://easyvisa-mlflow-vision-2025/mlflow-artifacts \
+            --host 0.0.0.0 \
+            --port 5000
         ports:
         - containerPort: 5000
         env:
@@ -42,11 +46,11 @@ spec:
           value: "*"
         resources:
           requests:
-            memory: "512Mi"
             cpu: "250m"
+            memory: "512Mi"
           limits:
-            memory: "1Gi"
             cpu: "500m"
+            memory: "1Gi"
 ---
 apiVersion: v1
 kind: Service
