@@ -7,7 +7,7 @@ WORKDIR /app
 
 # Install only what Evidently needs
 RUN pip install --no-cache-dir \
-    numpy==1.23.5 \  
+    numpy==1.24.0 \  
     evidently==0.4.16 \
     pandas==2.0.3 \
     prometheus-client>=0.20.0

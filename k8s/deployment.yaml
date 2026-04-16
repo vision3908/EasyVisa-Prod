@@ -1,66 +1,60 @@
-# k8s/deployment.yaml — EasyVisa API on EKS (2 replicas for HA)
-apiVersion: apps/v1
+﻿apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: visa-api-deployment
   namespace: easyvisa
-  labels:
-    app: visa-api
-    version: v10
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: visa-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         app: visa-api
-        version: v10
     spec:
       containers:
       - name: visa-api
-        image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-api:latest
+        image: 167963468596.dkr.ecr.us-east-1.amazonaws.com/easyvisa-api:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: AWS_ACCESS_KEY_ID
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: AWS_SECRET_ACCESS_KEY
-        - name: AWS_DEFAULT_REGION
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: AWS_DEFAULT_REGION
         - name: MLFLOW_TRACKING_URI
           valueFrom:
             secretKeyRef:
               name: easyvisa-secrets
-              key: MLFLOW_TRACKING_URI
+              key: mlflow-tracking-uri
         - name: MLFLOW_MODEL_URI
           valueFrom:
             secretKeyRef:
               name: easyvisa-secrets
-              key: MLFLOW_MODEL_URI
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "250m"
-          limits:
-            memory: "1Gi"
-            cpu: "500m"
+              key: mlflow-model-uri
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: easyvisa-secrets
+              key: aws-access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: easyvisa-secrets
+              key: aws-secret-access-key
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef:
+              name: easyvisa-secrets
+              key: aws-default-region
         livenessProbe:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 90
+          initialDelaySeconds: 120
           periodSeconds: 30
           timeoutSeconds: 15
           failureThreshold: 3
@@ -68,7 +62,14 @@ spec:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 90
+          initialDelaySeconds: 120
           periodSeconds: 15
           timeoutSeconds: 10
           failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
