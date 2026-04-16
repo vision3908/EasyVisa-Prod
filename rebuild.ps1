@@ -43,8 +43,8 @@ Start-Sleep -Seconds 120  # Wait for MLflow
 kubectl apply -f k8s\deployment.yaml
 kubectl apply -f k8s\service.yaml
 kubectl apply -f k8s\grafana-deployment.yaml
-kubectl apply -f k8s\prometheus-deploy.yaml
-kubectl apply -f k8s\evidently-deployme.yaml
+kubectl apply -f k8s\prometheus-deployment.yaml
+kubectl apply -f k8s\evidently-deployment.yaml
 
 # 9. Wait for MLflow ready then register model
 Start-Sleep -Seconds 30
