@@ -37,14 +37,14 @@ kubectl create secret generic easyvisa-secrets -n easyvisa `
 # 7. Apply all manifests
 kubectl apply -f k8s/mlflow-pvc.yaml
 kubectl apply -f k8s/mlflow-deployment.yaml
-Start-Sleep -Seconds 90  # Wait for MLflow
+Start-Sleep -Seconds 120  # Wait for MLflow
 
 # 8. Apply remaining services
-kubectl apply -f k8s/deployment.yaml
-kubectl apply -f k8s/service.yaml
-kubectl apply -f k8s/grafana-deployment.yaml
-kubectl apply -f k8s/prometheus-deploy.yaml
-kubectl apply -f k8s/evidently-deployme.yaml
+kubectl apply -f k8s\deployment.yaml
+kubectl apply -f k8s\service.yaml
+kubectl apply -f k8s\grafana-deployment.yaml
+kubectl apply -f k8s\prometheus-deploy.yaml
+kubectl apply -f k8s\evidently-deployme.yaml
 
 # 9. Wait for MLflow ready then register model
 Start-Sleep -Seconds 30
