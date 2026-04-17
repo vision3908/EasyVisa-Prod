@@ -1,9 +1,235 @@
-# k8s/grafana-deployment.yaml — Grafana on EKS with public URL
+# ============================================================
+# k8s/grafana-deployment.yaml
+# EasyVisa V10 — Grafana on EKS
+#
+# WHAT THIS DOES:
+#   - Deploys Grafana with Prometheus auto-provisioned as datasource
+#   - Two dashboard ConfigMaps provisioned automatically at startup:
+#       * EasyVisa API Dashboard  (prediction counts, latency, error rate)
+#       * EasyVisa Drift Dashboard (Evidently drift scores)
+#   - PersistentVolumeClaim (2 Gi EBS) retains dashboards/plugins across restarts
+#   - Liveness + readiness probes on /api/health
+#   - Resource requests/limits set for EKS scheduling
+#   - LoadBalancer Service exposes UI on port 80 (maps to 3000)
+#   - Credentials: admin / easyvisa123  (change via GF_SECURITY_ADMIN_PASSWORD)
+#
+# DEPLOY:
+#   kubectl apply -f k8s/grafana-deployment.yaml -n easyvisa
+# ============================================================
+
+# ── ConfigMap: Prometheus datasource auto-provisioning ───────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource
+  namespace: easyvisa
+  labels:
+    app: grafana
+    project: easyvisa
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        # Internal K8s DNS — Grafana pod resolves this within the cluster
+        url: http://prometheus-service:80
+        isDefault: true
+        editable: false
+
+---
+# ── ConfigMap: Dashboard provisioning config ─────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: easyvisa
+  labels:
+    app: grafana
+    project: easyvisa
+data:
+  provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'EasyVisa Dashboards'
+        orgId: 1
+        folder: 'EasyVisa'
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+# ── ConfigMap: API performance dashboard JSON ────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-api-dashboard
+  namespace: easyvisa
+  labels:
+    app: grafana
+    project: easyvisa
+data:
+  api-dashboard.json: |
+    {
+      "title": "EasyVisa — API Performance",
+      "uid": "easyvisa-api",
+      "tags": ["easyvisa", "api"],
+      "timezone": "browser",
+      "refresh": "30s",
+      "schemaVersion": 38,
+      "panels": [
+        {
+          "id": 1,
+          "title": "Total Predictions (All Time)",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "targets": [{"expr": "sum(predictions_total)", "legendFormat": "Total"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}}
+        },
+        {
+          "id": 2,
+          "title": "Prediction Rate (req/min)",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "targets": [{"expr": "rate(predictions_total[5m]) * 60", "legendFormat": "req/min"}],
+          "fieldConfig": {"defaults": {"decimals": 2, "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "blue", "value": null}]}}}
+        },
+        {
+          "id": 3,
+          "title": "p95 Prediction Latency (s)",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "targets": [{"expr": "histogram_quantile(0.95, rate(prediction_latency_seconds_bucket[5m]))", "legendFormat": "p95"}],
+          "fieldConfig": {"defaults": {"decimals": 3, "unit": "s", "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.5}, {"color": "red", "value": 1}]}}}
+        },
+        {
+          "id": 4,
+          "title": "API Error Rate",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "targets": [{"expr": "rate(api_requests_total{status='error'}[5m]) / rate(api_requests_total[5m])", "legendFormat": "error rate"}],
+          "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 2, "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}}}
+        },
+        {
+          "id": 5,
+          "title": "Prediction Volume Over Time",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "targets": [
+            {"expr": "rate(predictions_total{prediction='Certified'}[5m]) * 60", "legendFormat": "Certified/min"},
+            {"expr": "rate(predictions_total{prediction='Denied'}[5m]) * 60", "legendFormat": "Denied/min"}
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Latency Distribution (p50 / p95 / p99)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, rate(prediction_latency_seconds_bucket[5m]))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, rate(prediction_latency_seconds_bucket[5m]))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, rate(prediction_latency_seconds_bucket[5m]))", "legendFormat": "p99"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "s"}}
+        }
+      ]
+    }
+
+---
+# ── ConfigMap: Drift monitoring dashboard JSON ───────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-drift-dashboard
+  namespace: easyvisa
+  labels:
+    app: grafana
+    project: easyvisa
+data:
+  drift-dashboard.json: |
+    {
+      "title": "EasyVisa — Data Drift (Evidently)",
+      "uid": "easyvisa-drift",
+      "tags": ["easyvisa", "drift", "evidently"],
+      "timezone": "browser",
+      "refresh": "1m",
+      "schemaVersion": 38,
+      "panels": [
+        {
+          "id": 1,
+          "title": "Overall Dataset Drift Detected",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "targets": [{"expr": "evidently_dataset_drift_detected", "legendFormat": "Drift Detected (1=yes)"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+        },
+        {
+          "id": 2,
+          "title": "Share of Drifted Features",
+          "type": "gauge",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "targets": [{"expr": "evidently_share_of_drifted_features", "legendFormat": "Drifted Feature Share"}],
+          "fieldConfig": {"defaults": {"min": 0, "max": 1, "unit": "percentunit", "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.2}, {"color": "red", "value": 0.4}]}}}
+        },
+        {
+          "id": 3,
+          "title": "Number of Drifted Features",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "targets": [{"expr": "evidently_number_of_drifted_features", "legendFormat": "Count"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 4}]}}}
+        },
+        {
+          "id": 4,
+          "title": "Inference Log Row Count",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "targets": [{"expr": "evidently_reference_rows", "legendFormat": "Log Rows"}],
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "blue", "value": null}]}}}
+        },
+        {
+          "id": 5,
+          "title": "Per-Feature Drift Score Over Time",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+          "targets": [{"expr": "evidently_feature_drift_score", "legendFormat": "{{feature}}"}],
+          "fieldConfig": {"defaults": {"min": 0, "max": 1}}
+        }
+      ]
+    }
+
+---
+# ── PersistentVolumeClaim: retains Grafana state across pod restarts ─────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+  namespace: easyvisa
+  labels:
+    app: grafana
+    project: easyvisa
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp2
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+# ── Deployment ───────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana
   namespace: easyvisa
+  labels:
+    app: grafana
+    project: easyvisa
+    component: monitoring
 spec:
   replicas: 1
   selector:
@@ -13,12 +239,22 @@ spec:
     metadata:
       labels:
         app: grafana
+        project: easyvisa
+        component: monitoring
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472     # official Grafana UID
+        fsGroup: 472
+
       containers:
       - name: grafana
-        image: grafana/grafana:latest
+        image: grafana/grafana:10.4.2   # pinned stable release
         ports:
-        - containerPort: 3000
+        - name: web
+          containerPort: 3000
+          protocol: TCP
+
         env:
         - name: GF_SECURITY_ADMIN_USER
           value: "admin"
@@ -26,16 +262,94 @@ spec:
           value: "easyvisa123"
         - name: GF_USERS_ALLOW_SIGN_UP
           value: "false"
+        # Point to Prometheus inside the cluster
+        - name: GF_DATASOURCES_DEFAULT_URL
+          value: "http://prometheus-service:80"
+        # Disable telemetry
+        - name: GF_ANALYTICS_REPORTING_ENABLED
+          value: "false"
+        - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+          value: "false"
+
+        resources:
+          requests:
+            cpu:    "100m"
+            memory: "128Mi"
+          limits:
+            cpu:    "300m"
+            memory: "256Mi"
+
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds:       15
+          timeoutSeconds:      5
+          failureThreshold:    3
+
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds:       10
+          timeoutSeconds:      5
+          failureThreshold:    3
+
+        volumeMounts:
+        - name: grafana-data
+          mountPath: /var/lib/grafana
+        - name: grafana-datasource
+          mountPath: /etc/grafana/provisioning/datasources
+          readOnly: true
+        - name: grafana-dashboard-provider
+          mountPath: /etc/grafana/provisioning/dashboards
+          readOnly: true
+        - name: grafana-api-dashboard
+          mountPath: /var/lib/grafana/dashboards/api-dashboard.json
+          subPath: api-dashboard.json
+          readOnly: true
+        - name: grafana-drift-dashboard
+          mountPath: /var/lib/grafana/dashboards/drift-dashboard.json
+          subPath: drift-dashboard.json
+          readOnly: true
+
+      volumes:
+      - name: grafana-data
+        persistentVolumeClaim:
+          claimName: grafana-pvc
+      - name: grafana-datasource
+        configMap:
+          name: grafana-datasource
+      - name: grafana-dashboard-provider
+        configMap:
+          name: grafana-dashboard-provider
+      - name: grafana-api-dashboard
+        configMap:
+          name: grafana-api-dashboard
+      - name: grafana-drift-dashboard
+        configMap:
+          name: grafana-drift-dashboard
+
 ---
+# ── Service: exposes Grafana UI via AWS LoadBalancer ─────────────────────────
 apiVersion: v1
 kind: Service
 metadata:
   name: grafana-service
   namespace: easyvisa
+  labels:
+    app: grafana
+    project: easyvisa
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
 spec:
   type: LoadBalancer
   selector:
     app: grafana
   ports:
-  - port: 80
+  - name: web
+    protocol: TCP
+    port: 80
     targetPort: 3000

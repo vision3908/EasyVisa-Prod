@@ -1,29 +1,87 @@
-# k8s/prometheus-deployment.yaml — Prometheus on EKS with public URL
+# ============================================================
+# k8s/prometheus-deployment.yaml
+# EasyVisa V10 — Prometheus on EKS
+#
+# WHAT THIS DOES:
+#   - Deploys Prometheus with a ConfigMap-driven scrape config
+#   - Scrapes visa-api (/metrics on port 80) every 15s
+#   - Scrapes evidently-service (/metrics on port 8085) every 60s
+#   - Scrapes itself for meta-monitoring
+#   - PersistentVolumeClaim (5 Gi EBS) retains metrics across pod restarts
+#   - Liveness + readiness probes on /-/healthy and /-/ready
+#   - Resource requests/limits set for EKS scheduling
+#   - LoadBalancer Service exposes UI on port 80 (maps to 9090)
+#
+# DEPLOY:
+#   kubectl apply -f k8s/prometheus-deployment.yaml -n easyvisa
+# ============================================================
+
+# ── ConfigMap: prometheus.yml scrape configuration ──────────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-config
   namespace: easyvisa
+  labels:
+    app: prometheus
+    project: easyvisa
 data:
   prometheus.yml: |
     global:
-      scrape_interval: 15s
+      scrape_interval:     15s
+      evaluation_interval: 15s
+      scrape_timeout:      10s
+
     scrape_configs:
+
+      # visa-api — prediction counts, latency histograms, error rates
       - job_name: 'visa-api'
         static_configs:
           - targets: ['visa-api-service:80']
         metrics_path: '/metrics'
+        scrape_interval: 15s
+
+      # evidently — data drift scores exposed as Prometheus metrics
       - job_name: 'evidently'
         static_configs:
           - targets: ['evidently-service:8085']
         metrics_path: '/metrics'
         scrape_interval: 60s
+
+      # prometheus self-scrape for meta-monitoring
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
 ---
+# ── PersistentVolumeClaim: retains TSDB across pod restarts ─────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+  namespace: easyvisa
+  labels:
+    app: prometheus
+    project: easyvisa
+spec:
+  accessModes:
+    - ReadWriteOnce          # EBS volumes are single-node RWO
+  storageClassName: gp2      # EBS CSI driver (must be installed on cluster)
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# ── Deployment ───────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prometheus
   namespace: easyvisa
+  labels:
+    app: prometheus
+    project: easyvisa
+    component: monitoring
 spec:
   replicas: 1
   selector:
@@ -33,32 +91,98 @@ spec:
     metadata:
       labels:
         app: prometheus
+        project: easyvisa
+        component: monitoring
+      annotations:
+        # Prometheus can scrape its own pod for meta-monitoring
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9090"
+        prometheus.io/path:   "/metrics"
     spec:
+      # Run as non-root for security best practice
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534   # nobody
+        fsGroup: 65534
+
       containers:
       - name: prometheus
-        image: prom/prometheus:latest
+        image: prom/prometheus:v2.51.2   # pinned — avoid surprise breaking changes
         ports:
-        - containerPort: 9090
+        - name: web
+          containerPort: 9090
+          protocol: TCP
+
         args:
           - '--config.file=/etc/prometheus/prometheus.yml'
+          - '--storage.tsdb.path=/prometheus'
           - '--storage.tsdb.retention.time=15d'
+          - '--web.enable-lifecycle'           # allows hot config reload via POST /-/reload
+          - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+          - '--web.console.templates=/usr/share/prometheus/consoles'
+
+        # ── Resource limits for EKS node scheduling ──────────────────────
+        resources:
+          requests:
+            cpu:    "100m"
+            memory: "256Mi"
+          limits:
+            cpu:    "500m"
+            memory: "512Mi"
+
+        # ── Liveness probe: restart if Prometheus hangs ───────────────────
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds:       15
+          timeoutSeconds:      5
+          failureThreshold:    3
+
+        # ── Readiness probe: remove from Service until Prometheus is ready ─
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds:       10
+          timeoutSeconds:      5
+          failureThreshold:    3
+
         volumeMounts:
-        - name: prometheus-config
+        - name: prometheus-config-vol
           mountPath: /etc/prometheus
+          readOnly: true
+        - name: prometheus-data
+          mountPath: /prometheus
+
       volumes:
-      - name: prometheus-config
+      - name: prometheus-config-vol
         configMap:
           name: prometheus-config
+      - name: prometheus-data
+        persistentVolumeClaim:
+          claimName: prometheus-pvc
+
 ---
+# ── Service: exposes Prometheus UI via AWS LoadBalancer ──────────────────────
 apiVersion: v1
 kind: Service
 metadata:
   name: prometheus-service
   namespace: easyvisa
+  labels:
+    app: prometheus
+    project: easyvisa
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
 spec:
   type: LoadBalancer
   selector:
     app: prometheus
   ports:
-  - port: 80
+  - name: web
+    protocol: TCP
+    port: 80
     targetPort: 9090
