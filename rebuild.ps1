@@ -1,7 +1,17 @@
-# EASYVISA CLUSTER REBUILD SCRIPT
-# Prerequisite: .env file has valid AWS credentials
+# ═══════════════════════════════════════════════════════
+# EASYVISA CLUSTER REBUILD SCRIPT - FULLY AUTOMATED
+# Usage: .\rebuild.ps1
+# Change CLUSTER_NAME if previous cluster is stuck
+# ═══════════════════════════════════════════════════════
 
-# 1. Load env vars
+$CLUSTER_NAME   = "easyvisa-cluster-v2"
+$NODEGROUP_NAME = "easyvisa-nodes"
+$REGION         = "us-east-1"
+$NAMESPACE      = "easyvisa"
+$ACCOUNT_ID     = "167963468596"
+$ECR             = "$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+
+# 1. Load env vars from .env
 Get-Content .env | ForEach-Object {
     if ($_ -match '^\s*([^#][^=]+)=(.+)$') {
         [System.Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim())
@@ -10,51 +20,99 @@ Get-Content .env | ForEach-Object {
 
 # 2. Create cluster
 eksctl create cluster `
-  --name easyvisa-cluster-v2 `
-  --region us-east-1 `
-  --nodegroup-name easyvisa-nodes `
+  --name $CLUSTER_NAME `
+  --region $REGION `
+  --nodegroup-name $NODEGROUP_NAME `
   --node-type t3.medium `
   --nodes 2
 
-# 3. Install EBS CSI driver
-aws eks create-addon --cluster-name easyvisa-cluster-v2 --addon-name aws-ebs-csi-driver --region us-east-1
+# 3. Update kubeconfig
+aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
 
-# 4. Attach EBS policy to node role
-$nodeRole = (aws eks describe-nodegroup --cluster-name easyvisa-cluster-v2 --nodegroup-name easyvisa-nodes --region us-east-1 --query "nodegroup.nodeRole" --output text).Trim().Split("/")[-1]
-aws iam attach-role-policy --role-name $nodeRole --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+# 4. Install EBS CSI driver
+aws eks create-addon `
+  --cluster-name $CLUSTER_NAME `
+  --addon-name aws-ebs-csi-driver `
+  --region $REGION
 
-# 5. Create namespace
-kubectl apply -f k8s/namespace.yaml
+# 5. Get node role and attach EBS policy
+$nodeRoleArn = (aws eks describe-nodegroup `
+  --cluster-name $CLUSTER_NAME `
+  --nodegroup-name $NODEGROUP_NAME `
+  --region $REGION `
+  --query "nodegroup.nodeRole" `
+  --output text).Trim()
+$nodeRole = $nodeRoleArn.Split("/")[-1]
+Write-Host "Node role: [$nodeRole]"
 
-# 6. Create secret
-kubectl create secret generic easyvisa-secrets -n easyvisa `
+aws iam attach-role-policy `
+  --role-name $nodeRole `
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+# 6. Wait for EBS CSI addon
+Write-Host "Waiting for EBS CSI driver (90s)..."
+Start-Sleep -Seconds 90
+
+# 7. Create namespace
+kubectl apply -f k8s\namespace.yaml
+
+# 8. Create secret
+kubectl create secret generic easyvisa-secrets -n $NAMESPACE `
   --from-literal=aws-access-key-id="$env:AWS_ACCESS_KEY_ID" `
   --from-literal=aws-secret-access-key="$env:AWS_SECRET_ACCESS_KEY" `
-  --from-literal=aws-default-region="us-east-1" `
+  --from-literal=aws-default-region="$REGION" `
   --from-literal=mlflow-tracking-uri="http://mlflow:5000" `
   --from-literal=mlflow-model-uri="models:/easyvisa_gbm/Production"
 
-# 7. Apply all manifests
-kubectl apply -f k8s/mlflow-pvc.yaml
-kubectl apply -f k8s/mlflow-deployment.yaml
-Start-Sleep -Seconds 120  # Wait for MLflow
+# 9. Apply MLflow PVC and deployment
+kubectl apply -f k8s\mlflow-pvc.yaml
+kubectl apply -f k8s\mlflow-deployment.yaml
 
-# 8. Apply remaining services
+# 10. Wait for MLflow to be ready
+Write-Host "Waiting for MLflow (120s)..."
+Start-Sleep -Seconds 120
+
+# 11. Apply remaining services
 kubectl apply -f k8s\deployment.yaml
 kubectl apply -f k8s\service.yaml
 kubectl apply -f k8s\grafana-deployment.yaml
 kubectl apply -f k8s\prometheus-deployment.yaml
 kubectl apply -f k8s\evidently-deployment.yaml
 
-# 9. Wait for MLflow ready then register model
+# 12. Fix evidently ECR placeholder
+kubectl set image deployment/evidently-service `
+  evidently-service=$ECR/easyvisa-evidently:latest `
+  -n $NAMESPACE
+
+# 13. Add console access for Administrator
+eksctl create iamidentitymapping `
+  --cluster $CLUSTER_NAME `
+  --region $REGION `
+  --arn arn:aws:iam::${ACCOUNT_ID}:user/Administrator `
+  --group system:masters `
+  --username Administrator
+
+# 14. Wait then register model
+Write-Host "Waiting before model registration (30s)..."
 Start-Sleep -Seconds 30
-$job = Start-Job -ScriptBlock { kubectl port-forward svc/mlflow 5001:5000 -n easyvisa }
-Start-Sleep -Seconds 5
+
+$job = Start-Job -ScriptBlock {
+    kubectl port-forward svc/mlflow 5001:5000 -n easyvisa
+}
+Start-Sleep -Seconds 8
+
+$env:MLFLOW_TRACKING_URI = "http://localhost:5001"
 python register_model.py
-Stop-Job $job; Remove-Job $job
 
-# 10. Restart visa-api
-kubectl rollout restart deployment/visa-api-deployment -n easyvisa
+Stop-Job $job
+Remove-Job $job
 
-Write-Host "DONE - check pods:"
-kubectl get pods -n easyvisa
+# 15. Restart visa-api to load registered model
+kubectl rollout restart deployment/visa-api-deployment -n $NAMESPACE
+
+# 16. Final status
+Write-Host "═══════════════════════════════════════"
+Write-Host "REBUILD COMPLETE — $CLUSTER_NAME"
+Write-Host "═══════════════════════════════════════"
+kubectl get pods -n $NAMESPACE
+kubectl get svc -n $NAMESPACE
