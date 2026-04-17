@@ -151,10 +151,11 @@ jobs:
 
     - name: Deploy MLflow to EKS
       run: |
-        kubectl delete deployment mlflow -n $EKS_NAMESPACE --ignore-not-found=true
-        kubectl delete service mlflow -n $EKS_NAMESPACE --ignore-not-found=true
+        
+        kubectl apply -f k8s/mlflow-pvc.yaml
         kubectl apply -f k8s/mlflow-deployment.yaml
-        kubectl rollout status deployment/mlflow -n easyvisa --timeout=300s
+        
+        
       
 
     - name: Deploy visa-api to EKS
