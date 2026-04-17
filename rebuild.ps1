@@ -1,10 +1,10 @@
-# ═══════════════════════════════════════════════════════
+# -------------------------------------------------------
 # EASYVISA CLUSTER REBUILD SCRIPT - FULLY AUTOMATED
 # Usage: .\rebuild.ps1
 # Change CLUSTER_NAME if previous cluster is stuck
-# ═══════════════════════════════════════════════════════
+# -------------------------------------------------------
 
-$CLUSTER_NAME   = "easyvisa-cluster-v2"
+$CLUSTER_NAME   = "easyvisa-cluster-v3"
 $NODEGROUP_NAME = "easyvisa-nodes"
 $REGION         = "us-east-1"
 $NAMESPACE      = "easyvisa"
@@ -111,8 +111,6 @@ Remove-Job $job
 kubectl rollout restart deployment/visa-api-deployment -n $NAMESPACE
 
 # 16. Final status
-Write-Host "═══════════════════════════════════════"
-Write-Host "REBUILD COMPLETE — $CLUSTER_NAME"
-Write-Host "═══════════════════════════════════════"
+Write-Host "REBUILD COMPLETE - $CLUSTER_NAME"
 kubectl get pods -n $NAMESPACE
 kubectl get svc -n $NAMESPACE
