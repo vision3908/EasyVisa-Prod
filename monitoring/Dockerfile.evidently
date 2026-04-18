@@ -4,8 +4,7 @@ RUN pip install --no-cache-dir \
     numpy==1.24.4 \
     pandas==1.5.3 \
     evidently==0.4.16 \
-    prometheus-client==0.20.0 \
-    boto3==1.34.0
+    prometheus-client==0.20.0
 
 RUN mkdir -p /app/monitoring /app/data
 
@@ -13,16 +12,7 @@ WORKDIR /app
 
 COPY monitoring/evidently_service.py /app/monitoring/evidently_service.py
 COPY monitoring/inference_log.csv /app/monitoring/inference_log.csv
-COPY monitoring/download_reference_data.py /app/download_reference_data.py
-
-ARG AWS_ACCESS_KEY_ID
-ARG AWS_SECRET_ACCESS_KEY
-ARG AWS_DEFAULT_REGION=us-east-1
-
-RUN AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
-    AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-    AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION} \
-    python /app/download_reference_data.py
+COPY data/EasyVisa.csv /app/data/EasyVisa.csv
 
 EXPOSE 8085
 CMD ["python", "/app/monitoring/evidently_service.py"]
