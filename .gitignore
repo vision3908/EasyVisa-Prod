@@ -30,4 +30,4 @@ check_artifacts.py
 check_prod.py
 list_versions.py
 promote.py
-
+monitoring/drift_report.html
