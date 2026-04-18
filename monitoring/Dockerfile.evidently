@@ -13,21 +13,16 @@ WORKDIR /app
 
 COPY monitoring/evidently_service.py /app/monitoring/evidently_service.py
 COPY monitoring/inference_log.csv /app/monitoring/inference_log.csv
+COPY monitoring/download_reference_data.py /app/download_reference_data.py
 
-# Download reference data from S3 at build time
 ARG AWS_ACCESS_KEY_ID
 ARG AWS_SECRET_ACCESS_KEY
 ARG AWS_DEFAULT_REGION=us-east-1
 
-RUN python -c "
-import boto3
-s3 = boto3.client('s3',
-    aws_access_key_id='${AWS_ACCESS_KEY_ID}',
-    aws_secret_access_key='${AWS_SECRET_ACCESS_KEY}',
-    region_name='${AWS_DEFAULT_REGION}')
-s3.download_file('easyvisa-mlflow-vision-2025', 'data/EasyVisa.csv', '/app/data/EasyVisa.csv')
-print('Downloaded EasyVisa.csv from S3')
-"
+RUN AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+    AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+    AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION} \
+    python /app/download_reference_data.py
 
 EXPOSE 8085
 CMD ["python", "/app/monitoring/evidently_service.py"]
