@@ -136,12 +136,12 @@ jobs:
       run: |
         kubectl create secret generic easyvisa-secrets \
           --namespace=$EKS_NAMESPACE \
-          --from-literal=AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
-          --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
-          --from-literal=AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION }} \
-          --from-literal=MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
-          --from-literal=MLFLOW_MODEL_URI=${{ secrets.MLFLOW_MODEL_URI }} \
-          --dry-run=client -o yaml | kubectl apply -f -
+          --from-literal=aws-access-key-id=${{ secrets.AWS_ACCESS_KEY_ID }} \
+          --from-literal=aws-secret-access-key=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+          --from-literal=aws-default-region=${{ secrets.AWS_DEFAULT_REGION }} \
+          --from-literal=mlflow-tracking-uri=${{ secrets.MLFLOW_TRACKING_URI }} \
+          --from-literal=mlflow-model-uri=${{ secrets.MLFLOW_MODEL_URI }} \
+          --dry-run=client -o yaml | kubectl apply -f -    
 
     - name: Update image tags in manifests
       env:
