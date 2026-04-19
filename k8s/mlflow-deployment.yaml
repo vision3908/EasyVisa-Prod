@@ -1,17 +1,27 @@
-﻿apiVersion: apps/v1
+﻿# k8s/mlflow-deployment.yaml — MLflow Tracking Server on EKS (V10)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-db-pvc
+  namespace: easyvisa
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: gp2
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mlflow
   namespace: easyvisa
-  labels:
-    app: mlflow
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: mlflow
-  strategy:
-    type: Recreate
   template:
     metadata:
       labels:
@@ -20,13 +30,17 @@ spec:
       containers:
       - name: mlflow
         image: ghcr.io/mlflow/mlflow:v2.10.0
-        command: ["/bin/sh", "-c"]
-        args:
-          - pip install boto3 --quiet && mlflow server
-            --backend-store-uri sqlite:////mlflow-data/mlflow.db
-            --default-artifact-root s3://easyvisa-mlflow-vision-2025/mlflow-artifacts
-            --host 0.0.0.0
-            --port 5000
+        command:
+        - mlflow
+        - server
+        - --backend-store-uri
+        - sqlite:////mlflow/mlflow.db
+        - --default-artifact-root
+        - s3://easyvisa-mlflow-vision-2025/mlflow-artifacts
+        - --host
+        - "0.0.0.0"
+        - --port
+        - "5000"
         ports:
         - containerPort: 5000
         env:
@@ -47,30 +61,13 @@ spec:
               key: aws-default-region
         volumeMounts:
         - name: mlflow-db-storage
-          mountPath: /mlflow-data
+          mountPath: /mlflow
         readinessProbe:
           httpGet:
             path: /health
             port: 5000
-          initialDelaySeconds: 60
-          periodSeconds: 15
-          timeoutSeconds: 10
-          failureThreshold: 6
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 5000
-          initialDelaySeconds: 90
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
-        resources:
-          requests:
-            memory: "1Gi"
-            cpu: "500m"
-          limits:
-            memory: "2Gi"
-            cpu: "1000m"
+          initialDelaySeconds: 30
+          periodSeconds: 10
       volumes:
       - name: mlflow-db-storage
         persistentVolumeClaim:
@@ -82,9 +79,9 @@ metadata:
   name: mlflow
   namespace: easyvisa
 spec:
+  type: ClusterIP
   selector:
     app: mlflow
   ports:
   - port: 5000
     targetPort: 5000
-  type: ClusterIP
