@@ -1,34 +1,9 @@
-# ============================================================
-# k8s/evidently-deployment.yaml
-# EasyVisa V10 — Evidently Drift Service on EKS
-#
-# WHAT THIS DOES:
-#   - Deploys the custom evidently-service container (ECR image)
-#   - Exposes /metrics on port 8085 — Prometheus scrapes this endpoint
-#   - Reads inference_log.csv from a shared EmptyDir volume
-#     (visa-api writes to this volume, evidently-service reads from it)
-#   - AWS credentials injected from easyvisa-secrets for S3 access
-#   - Liveness + readiness probes on /health (port 8085)
-#   - Resource requests/limits for EKS scheduling
-#   - ClusterIP service (internal only — Prometheus scrapes it inside the cluster)
-#
-# NOTE: evidently-service is NOT exposed publicly — only Prometheus scrapes it.
-#       Set type: LoadBalancer below if you want a public Evidently UI.
-#
-# DEPLOY:
-#   kubectl apply -f k8s/evidently-deployment.yaml -n easyvisa
-# ============================================================
-
-# ── Deployment ───────────────────────────────────────────────────────────────
+# Use a pre-seeded approach - deploy AFTER manual image build
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: evidently-service
   namespace: easyvisa
-  labels:
-    app: evidently-service
-    project: easyvisa
-    component: drift-monitoring
 spec:
   replicas: 1
   selector:
@@ -38,111 +13,10 @@ spec:
     metadata:
       labels:
         app: evidently-service
-        project: easyvisa
-        component: drift-monitoring
-      annotations:
-        # Tell Prometheus to scrape this pod directly (optional — static config in Prometheus ConfigMap already handles this)
-        prometheus.io/scrape: "true"
-        prometheus.io/port:   "8085"
-        prometheus.io/path:   "/metrics"
     spec:
       containers:
       - name: evidently-service
-        # Image tag is replaced at deploy time by CI/CD (sed substitution in ci-cd.yml)
         image: 167963468596.dkr.ecr.us-east-1.amazonaws.com/easyvisa-evidently:latest
         imagePullPolicy: Always
-
         ports:
-        - name: metrics
-          containerPort: 8085
-          protocol: TCP
-
-        env:
-        # AWS credentials — injected from Kubernetes Secret (created by CI/CD)
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: AWS_ACCESS_KEY_ID
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: AWS_SECRET_ACCESS_KEY
-        - name: AWS_DEFAULT_REGION
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: AWS_DEFAULT_REGION
-
-        # Path to the inference log written by visa-api
-        # Must match INFERENCE_LOG_PATH in api.py
-        - name: INFERENCE_LOG_PATH
-          value: "/app/monitoring/inference_log.csv"
-
-        # Drift check interval in seconds (default: 60)
-        - name: DRIFT_CHECK_INTERVAL
-          value: "60"
-
-        resources:
-          requests:
-            cpu:    "100m"
-            memory: "256Mi"
-          limits:
-            cpu:    "500m"
-            memory: "512Mi"
-
-        # ── Liveness probe: restart if /health stops responding ───────────
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8085
-          initialDelaySeconds: 30
-          periodSeconds:       15
-          timeoutSeconds:      5
-          failureThreshold:    3
-
-        # ── Readiness probe: hold traffic until service is up ─────────────
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8085
-          initialDelaySeconds: 10
-          periodSeconds:       10
-          timeoutSeconds:      5
-          failureThreshold:    3
-
-        volumeMounts:
-        - name: monitoring-data
-          mountPath: /app/monitoring
-
-      volumes:
-      # Shared EmptyDir volume — visa-api writes inference_log.csv,
-      # evidently-service reads it.
-      # NOTE: For production multi-pod setups, replace with a shared PVC or S3-backed log.
-      - name: monitoring-data
-        emptyDir: {}
-
----
-# ── Service: ClusterIP — internal only (Prometheus scrapes within cluster) ───
-apiVersion: v1
-kind: Service
-metadata:
-  name: evidently-service
-  namespace: easyvisa
-  labels:
-    app: evidently-service
-    project: easyvisa
-  # Uncomment below to expose Evidently UI publicly via AWS NLB
-  # annotations:
-  #   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-spec:
-  # Change to LoadBalancer to get a public AWS URL for the Evidently UI
-  type: ClusterIP
-  selector:
-    app: evidently-service
-  ports:
-  - name: metrics
-    protocol: TCP
-    port: 8085
-    targetPort: 8085
+        - containerPort: 8085
