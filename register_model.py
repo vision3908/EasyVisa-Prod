@@ -1,6 +1,6 @@
-﻿from mlflow.tracking import MlflowClient
+from mlflow.tracking import MlflowClient
 
-client = MlflowClient('http://localhost:5001')
+client = MlflowClient('http://localhost:5000')
 
 # Create model if not exists
 try:
