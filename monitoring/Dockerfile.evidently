@@ -12,7 +12,6 @@ WORKDIR /app
 
 COPY monitoring/evidently_service.py /app/monitoring/evidently_service.py
 COPY monitoring/inference_log.csv /app/monitoring/inference_log.csv
-COPY data/EasyVisa.csv /app/data/EasyVisa.csv
 
 EXPOSE 8085
 CMD ["python", "/app/monitoring/evidently_service.py"]
