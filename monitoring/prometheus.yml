@@ -14,7 +14,7 @@ scrape_configs:
   # ── Evidently live drift metrics (V9) ──────────────────────────
   - job_name: 'evidently'
     static_configs:
-      - targets: ['evidently-service:8085']
+      - targets: ['evidently-service.easyvisa.svc.cluster.local:8085']
     metrics_path: '/metrics'
     scrape_interval: 60s    # Match Evidently's refresh interval
 
