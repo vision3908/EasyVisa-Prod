@@ -79,6 +79,7 @@ kubectl apply -f k8s/service.yaml               -n $NAMESPACE
 kubectl apply -f k8s/prometheus-deployment.yaml -n $NAMESPACE
 kubectl apply -f k8s/grafana-deployment.yaml    -n $NAMESPACE
 kubectl apply -f k8s/evidently-deployment.yaml  -n $NAMESPACE
+kubectl apply -f k8s/hpa.yaml -n easyvisa       -n $NAMESPACE
 Write-Host "   All manifests applied." -ForegroundColor Green
 
 # STEP 7: Register Model in MLflow
