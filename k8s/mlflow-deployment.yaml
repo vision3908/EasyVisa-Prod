@@ -56,7 +56,7 @@ spec:
           - mlflow
           - server
           - --backend-store-uri
-          - sqlite:////mlflow/mlflow.db
+          - postgresql://mlflow:easyvisa123@easyvisa-mlflow-db.c6x82666ejqw.us-east-1.rds.amazonaws.com:5432/postgres
           - --default-artifact-root
           - s3://easyvisa-mlflow-vision-2025/mlflow-artifacts
           - --host
