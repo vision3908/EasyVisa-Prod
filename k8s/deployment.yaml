@@ -1,4 +1,4 @@
-apiVersion: apps/v1
+﻿apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: visa-api-deployment
@@ -18,6 +18,10 @@ spec:
       labels:
         app: visa-api
     spec:
+      initContainers:
+      - name: wait-for-model
+        image: curlimages/curl:latest
+        command: ['sh', '-c', 'until curl -s "http://mlflow:5000/api/2.0/mlflow/registered-models/get?name=easyvisa_gbm" | grep easyvisa_gbm; do echo waiting for model; sleep 10; done']
       containers:
       - name: visa-api
         image: 167963468596.dkr.ecr.us-east-1.amazonaws.com/easyvisa-api:latest
@@ -68,8 +72,8 @@ spec:
           failureThreshold: 3
         resources:
           requests:
-            memory: "512Mi"
-            cpu: "250m"
+            memory: 512Mi
+            cpu: 250m
           limits:
-            memory: "1Gi"
-            cpu: "500m"
+            memory: 1Gi
+            cpu: 500m

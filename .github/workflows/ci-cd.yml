@@ -1,22 +1,25 @@
-# .github/workflows/ci-cd.yml — EasyVisa V10 CI/CD Pipeline
+# .github/workflows/ci-cd.yml — EasyVisa V11 CI/CD Pipeline
+#
 # WHAT THIS DOES ON EVERY git push TO main:
 #   1. Lint code with ruff
 #   2. Build Docker images (visa-api + evidently)
 #   3. Push images to AWS ECR
-#   4. Deploy all services to EKS (visa-api, prometheus, grafana, evidently)
-#   5. Wait for LoadBalancer URLs to be assigned by AWS
-#   6. Output public URLs for all services in the Actions log
+#   4. Deploy all services to EKS (visa-api, mlflow, prometheus, grafana, evidently)
+#   5. Deploy Airflow to EKS                          ← V11 NEW
+#   6. Wait for LoadBalancer URLs to be assigned by AWS
+#   7. Output public URLs for all services in the Actions log
+#   8. Sync DAG file to the running Airflow pod       ← V11 NEW
 #
 # REQUIRED GITHUB SECRETS (Settings -> Secrets -> Actions):
 #   AWS_ACCESS_KEY_ID       : IAM user key with ECR + EKS permissions
 #   AWS_SECRET_ACCESS_KEY   : IAM user secret
 #   AWS_DEFAULT_REGION      : us-east-1
-#   AWS_ACCOUNT_ID          : Your 12-digit AWS account ID
-#   EKS_CLUSTER_NAME        : easyvisa-cluster
-#   MLFLOW_TRACKING_URI     : MLflow server URL accessible from EKS pods
+#   AWS_ACCOUNT_ID          : Your 12-digit AWS account ID (167963468596)
+#   EKS_CLUSTER_NAME        : easyvisa-cluster-v3
+#   MLFLOW_TRACKING_URI     : http://mlflow:5000
 #   MLFLOW_MODEL_URI        : models:/easyvisa_gbm/Production
 
-name: EasyVisa V10 — CI/CD Pipeline (EKS + Cloud Observability)
+name: EasyVisa V11 — CI/CD Pipeline (EKS + Airflow Retraining)
 
 on:
   push:
@@ -25,204 +28,232 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
-  ECR_REPO_API: easyvisa-api
-  ECR_REPO_EVIDENTLY: easyvisa-evidently
-  EKS_NAMESPACE: easyvisa
+  AWS_REGION:          ${{ secrets.AWS_DEFAULT_REGION }}
+  ECR_REPO_API:        easyvisa-api
+  ECR_REPO_EVIDENTLY:  easyvisa-evidently
+  EKS_NAMESPACE:       easyvisa
 
 jobs:
 
-  # ── Job 1: Lint ──────────────────────────────────────────────────────────
+  # ── Job 1: Lint ─────────────────────────────────────────────────────────────
   lint:
     name: Lint Code
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-    - name: Install ruff
-      run: pip install ruff
-    - name: Lint src/
-      run: ruff check src/ --ignore E501
+      - uses: actions/checkout@v4
 
-  # ── Job 2: Build + Push to ECR ───────────────────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint src/
+        run: ruff check src/ --ignore E501
+
+      # V11: also lint the DAG file
+      - name: Lint airflow/dags/
+        run: ruff check airflow/dags/ --ignore E501 || true
+
+  # ── Job 2: Build + Push to ECR ──────────────────────────────────────────────
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
     needs: lint
     outputs:
-      api_image: ${{ steps.build-api.outputs.image }}
+      api_image:       ${{ steps.build-api.outputs.image }}
       evidently_image: ${{ steps.build-evidently.outputs.image }}
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Create ECR repositories if not exist
-      run: |
-        aws ecr describe-repositories --repository-names $ECR_REPO_API 2>/dev/null || \
-          aws ecr create-repository --repository-name $ECR_REPO_API
-        aws ecr describe-repositories --repository-names $ECR_REPO_EVIDENTLY 2>/dev/null || \
-          aws ecr create-repository --repository-name $ECR_REPO_EVIDENTLY
+      - name: Create ECR repositories if not exist
+        run: |
+          aws ecr describe-repositories --repository-names $ECR_REPO_API 2>/dev/null || \
+            aws ecr create-repository --repository-name $ECR_REPO_API
+          aws ecr describe-repositories --repository-names $ECR_REPO_EVIDENTLY 2>/dev/null || \
+            aws ecr create-repository --repository-name $ECR_REPO_EVIDENTLY
 
-    - name: Build and push visa-api image
-      id: build-api
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-      run: |
-        IMAGE=$ECR_REGISTRY/$ECR_REPO_API:${{ github.sha }}
-        LATEST=$ECR_REGISTRY/$ECR_REPO_API:latest
-        docker build --no-cache -t $IMAGE -t $LATEST .
-        docker push $IMAGE
-        docker push $LATEST
-        echo "image=$IMAGE" >> $GITHUB_OUTPUT
-        echo "✅ visa-api image pushed: $IMAGE"
+      - name: Build and push visa-api image
+        id: build-api
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE=$ECR_REGISTRY/$ECR_REPO_API:${{ github.sha }}
+          LATEST=$ECR_REGISTRY/$ECR_REPO_API:latest
+          docker build --no-cache -t $IMAGE -t $LATEST .
+          docker push $IMAGE
+          docker push $LATEST
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ visa-api image pushed: $IMAGE"
 
-    - name: Build and push evidently image
-      id: build-evidently
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-      run: |
-        IMAGE=$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:${{ github.sha }}
-        LATEST=$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:latest
-        docker build --no-cache \
-          -f monitoring/Dockerfile.evidently \
-          --build-arg AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
-          --build-arg AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
-          --build-arg AWS_DEFAULT_REGION=us-east-1 \
-          -t $IMAGE -t $LATEST .
-        docker push $IMAGE
-        docker push $LATEST
-        echo "image=$IMAGE" >> $GITHUB_OUTPUT
-        echo "✅ evidently image pushed: $IMAGE"
+      - name: Build and push evidently image
+        id: build-evidently
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE=$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:${{ github.sha }}
+          LATEST=$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:latest
+          docker build --no-cache \
+            -f monitoring/Dockerfile.evidently \
+            -t $IMAGE -t $LATEST .
+          docker push $IMAGE
+          docker push $LATEST
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ evidently image pushed: $IMAGE"
 
-  # ── Job 3: Deploy to EKS + Output Public URLs ────────────────────────────
+  # ── Job 3: Deploy to EKS + Output Public URLs ───────────────────────────────
   deploy:
     name: Deploy to EKS and Output Public URLs
     runs-on: ubuntu-latest
     needs: build-and-push
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
 
-    - name: Update kubeconfig for EKS
-      run: |
-        aws eks update-kubeconfig \
-          --name ${{ secrets.EKS_CLUSTER_NAME }} \
-          --region ${{ env.AWS_REGION }}
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
 
-    - name: Create namespace
-      run: kubectl apply -f k8s/namespace.yaml
+      - name: Create namespace
+        run: kubectl apply -f k8s/namespace.yaml
 
-    - name: Create Kubernetes secrets from GitHub Secrets
-      run: |
-        kubectl create secret generic easyvisa-secrets \
-          --namespace=$EKS_NAMESPACE \
-          --from-literal=aws-access-key-id=${{ secrets.AWS_ACCESS_KEY_ID }} \
-          --from-literal=aws-secret-access-key=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
-          --from-literal=aws-default-region=${{ secrets.AWS_DEFAULT_REGION }} \
-          --from-literal=mlflow-tracking-uri=${{ secrets.MLFLOW_TRACKING_URI }} \
-          --from-literal=mlflow-model-uri=${{ secrets.MLFLOW_MODEL_URI }} \
-          --dry-run=client -o yaml | kubectl apply -f -    
+      - name: Create Kubernetes secrets from GitHub Secrets
+        run: |
+          kubectl create secret generic easyvisa-secrets \
+            --namespace=$EKS_NAMESPACE \
+            --from-literal=AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+            --from-literal=AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION }} \
+            --from-literal=MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
+            --from-literal=MLFLOW_MODEL_URI=${{ secrets.MLFLOW_MODEL_URI }} \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-    - name: Update image tags in manifests
-      env:
-        ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-      run: |
-        sed -i "s|ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-api:latest|$ECR_REGISTRY/$ECR_REPO_API:latest|g" \
-          k8s/deployment.yaml
-        sed -i "s|ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-evidently:latest|$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:latest|g" \
-          k8s/evidently-deployment.yaml
+      - name: Update image tags in manifests
+        env:
+          ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        run: |
+          sed -i "s|ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-api:latest|$ECR_REGISTRY/$ECR_REPO_API:latest|g" \
+            k8s/deployment.yaml
+          sed -i "s|ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/easyvisa-evidently:latest|$ECR_REGISTRY/$ECR_REPO_EVIDENTLY:latest|g" \
+            k8s/evidently-deployment.yaml
 
-    - name: Deploy MLflow to EKS
-      run: |
-        
-        kubectl apply -f k8s/mlflow-pvc.yaml
-        kubectl apply -f k8s/mlflow-deployment.yaml
-        
-        
-      
+      - name: Deploy MLflow to EKS
+        run: kubectl apply -f k8s/mlflow-deployment.yaml -n $EKS_NAMESPACE
 
-    - name: Deploy visa-api to EKS
-      run: |
-        kubectl apply -f k8s/deployment.yaml -n $EKS_NAMESPACE
-        kubectl apply -f k8s/service.yaml -n $EKS_NAMESPACE
-        kubectl rollout status deployment/visa-api-deployment \
-          -n $EKS_NAMESPACE --timeout=600s  || true
+      - name: Deploy visa-api to EKS
+        run: |
+          kubectl apply -f k8s/deployment.yaml -n $EKS_NAMESPACE
+          kubectl apply -f k8s/service.yaml    -n $EKS_NAMESPACE
+          kubectl rollout status deployment/visa-api-deployment \
+            -n $EKS_NAMESPACE --timeout=300s
 
-    - name: Deploy Prometheus to EKS
-      run: kubectl apply -f k8s/prometheus-deployment.yaml -n $EKS_NAMESPACE
+      - name: Deploy Prometheus to EKS
+        run: kubectl apply -f k8s/prometheus-deployment.yaml -n $EKS_NAMESPACE
 
-    - name: Deploy Grafana to EKS
-      run: kubectl apply -f k8s/grafana-deployment.yaml -n $EKS_NAMESPACE
+      - name: Deploy Grafana to EKS
+        run: kubectl apply -f k8s/grafana-deployment.yaml -n $EKS_NAMESPACE
 
-    - name: Deploy Evidently to EKS
-      run: kubectl apply -f k8s/evidently-deployment.yaml -n $EKS_NAMESPACE
+      - name: Deploy Evidently to EKS
+        run: kubectl apply -f k8s/evidently-deployment.yaml -n $EKS_NAMESPACE
 
-    - name: Wait for AWS LoadBalancer URLs (up to 5 minutes)
-      run: |
-        echo "Waiting for AWS Load Balancers to be assigned..."
-        for SERVICE in visa-api-service prometheus-service grafana-service; do
-          echo "Waiting for $SERVICE..."
-          for i in $(seq 1 30); do
-            URL=$(kubectl get svc $SERVICE -n $EKS_NAMESPACE \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
-            if [ -n "$URL" ]; then
-              echo "$SERVICE ready: $URL"
-              break
-            fi
-            echo "  attempt $i/30 — sleeping 10s..."
-            sleep 10
+      # ── V11 NEW: Deploy Airflow ──────────────────────────────────────────────
+      - name: Deploy Airflow to EKS
+        run: kubectl apply -f k8s/airflow-deployment.yaml -n $EKS_NAMESPACE
+
+      - name: Wait for AWS LoadBalancer URLs (up to 5 minutes)
+        run: |
+          echo "Waiting for AWS Load Balancers to be assigned..."
+          for SERVICE in visa-api-service prometheus-service grafana-service airflow-service; do
+            echo "Waiting for $SERVICE..."
+            for i in $(seq 1 30); do
+              URL=$(kubectl get svc $SERVICE -n $EKS_NAMESPACE \
+                -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+              if [ -n "$URL" ]; then
+                echo "$SERVICE ready: $URL"
+                break
+              fi
+              echo "  attempt $i/30 — sleeping 10s..."
+              sleep 10
+            done
           done
-        done
 
-    - name: Output all public service URLs
-      run: |
-        API_URL=$(kubectl get svc visa-api-service -n $EKS_NAMESPACE \
-          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-        PROM_URL=$(kubectl get svc prometheus-service -n $EKS_NAMESPACE \
-          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-        GRAFANA_URL=$(kubectl get svc grafana-service -n $EKS_NAMESPACE \
-          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+      - name: Output all public service URLs
+        run: |
+          API_URL=$(kubectl get svc visa-api-service -n $EKS_NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          PROM_URL=$(kubectl get svc prometheus-service -n $EKS_NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          GRAFANA_URL=$(kubectl get svc grafana-service -n $EKS_NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          AIRFLOW_URL=$(kubectl get svc airflow-service -n $EKS_NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
-        echo ""
-        echo "================================================================"
-        echo "  EasyVisa V10 — DEPLOYED TO AWS EKS"
-        echo "================================================================"
-        echo "  API:         http://$API_URL"
-        echo "  API Docs:    http://$API_URL/docs"
-        echo "  API Health:  http://$API_URL/health"
-        echo "  Prometheus:  http://$PROM_URL"
-        echo "  Grafana:     http://$GRAFANA_URL  (admin/easyvisa123)"
-        echo "================================================================"
+          echo ""
+          echo "================================================================"
+          echo "  EasyVisa V11 — DEPLOYED TO AWS EKS"
+          echo "================================================================"
+          echo "  API:         http://$API_URL"
+          echo "  API Docs:    http://$API_URL/docs"
+          echo "  API Health:  http://$API_URL/health"
+          echo "  API Metrics: http://$API_URL/metrics"
+          echo "  Prometheus:  http://$PROM_URL"
+          echo "  Grafana:     http://$GRAFANA_URL  (admin/easyvisa123)"
+          echo "  Airflow:     http://$AIRFLOW_URL:8080  (admin/easyvisa123)"
+          echo "================================================================"
 
-        echo "::notice title=API URL::http://$API_URL/docs"
-        echo "::notice title=Grafana URL::http://$GRAFANA_URL"
-        echo "::notice title=Prometheus URL::http://$PROM_URL"
+          echo "::notice title=API URL::http://$API_URL/docs"
+          echo "::notice title=Grafana URL::http://$GRAFANA_URL"
+          echo "::notice title=Prometheus URL::http://$PROM_URL"
+          echo "::notice title=Airflow URL::http://$AIRFLOW_URL:8080"
 
-    - name: Verify API is healthy
-      run: |
-        API_URL=$(kubectl get svc visa-api-service -n $EKS_NAMESPACE \
-          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-        echo "Testing http://$API_URL/health ..."
-        sleep 30
-        curl -f http://$API_URL/health && echo "✅ API is healthy!" || \
-          echo "⚠️ Health check pending — pods may still be starting"
+      - name: Verify API is healthy
+        run: |
+          API_URL=$(kubectl get svc visa-api-service -n $EKS_NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "Testing http://$API_URL/health ..."
+          sleep 30
+          curl -f http://$API_URL/health && echo "✅ API is healthy!" || \
+            echo "⚠️ Health check pending — pods may still be starting"
+
+      # ── V11 NEW: Sync DAG to Airflow pod ────────────────────────────────────
+      # Runs after all deployments so the Airflow pod has time to initialize.
+      # Safe to fail (|| true) — pod may not be Ready yet on first deploy;
+      # subsequent pushes will always succeed once Airflow is running.
+      - name: Sync DAG to Airflow pod
+        run: |
+          echo "Looking for Airflow pod in namespace $EKS_NAMESPACE..."
+          AIRFLOW_POD=$(kubectl get pods -n $EKS_NAMESPACE -l app=airflow \
+            -o jsonpath="{.items[0].metadata.name}" 2>/dev/null || echo "")
+
+          if [ -n "$AIRFLOW_POD" ]; then
+            echo "Found Airflow pod: $AIRFLOW_POD"
+            kubectl cp airflow/dags/easyvisa_retrain_dag.py \
+              $EKS_NAMESPACE/$AIRFLOW_POD:/opt/airflow/dags/easyvisa_retrain_dag.py
+            echo "✅ DAG synced → $AIRFLOW_POD:/opt/airflow/dags/easyvisa_retrain_dag.py"
+          else
+            echo "⚠️  Airflow pod not found — pod may still be initializing."
+            echo "    DAG will be available once the pod starts via the initContainer git-clone."
+            echo "    Re-push or manually copy on next deploy."
+          fi

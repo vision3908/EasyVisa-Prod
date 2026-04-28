@@ -1,7 +1,7 @@
 ﻿apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: mlflow-db-pvc
+  name: mlflow-pvc
   namespace: easyvisa
 spec:
   accessModes:

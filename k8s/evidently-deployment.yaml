@@ -1,4 +1,4 @@
-# Use a pre-seeded approach - deploy AFTER manual image build
+﻿# Use a pre-seeded approach - deploy AFTER manual image build
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,3 +35,5 @@ spec:
   - port: 8085
     targetPort: 8085
     protocol: TCP        
+
+

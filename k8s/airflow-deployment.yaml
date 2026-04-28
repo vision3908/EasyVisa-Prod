@@ -1,0 +1,151 @@
+# k8s/airflow-deployment.yaml - EasyVisa V11
+# Includes: ServiceAccount, RBAC, ConfigMap, Deployment, Service
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: airflow-sa
+  namespace: easyvisa
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-rollout-role
+  namespace: easyvisa
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-rollout-binding
+  namespace: easyvisa
+subjects:
+  - kind: ServiceAccount
+    name: airflow-sa
+    namespace: easyvisa
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: airflow-rollout-role
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: easyvisa
+data:
+  airflow.cfg: |
+    [core]
+    dags_folder = /opt/airflow/dags
+    executor = SequentialExecutor
+    load_examples = False
+    default_timezone = utc
+    [webserver]
+    web_server_port = 8080
+    expose_config = False
+    [logging]
+    base_log_folder = /opt/airflow/logs
+    log_level = INFO
+    [scheduler]
+    job_heartbeat_sec = 30
+    scheduler_heartbeat_sec = 30
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow
+  namespace: easyvisa
+  labels:
+    app: airflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+  template:
+    metadata:
+      labels:
+        app: airflow
+    spec:
+      serviceAccountName: airflow-sa
+      containers:
+        - name: airflow
+          image: apache/airflow:2.9.1
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              pip install --no-cache-dir joblib scikit-learn imbalanced-learn mlflow boto3 pandas numpy requests
+              airflow db init
+              airflow users create --username admin --password easyvisa123 --firstname E --lastname V --role Admin --email admin@easyvisa.local || true
+              mkdir -p /opt/airflow/dags /opt/airflow/data /opt/airflow/logs
+              airflow scheduler &
+              airflow webserver -p 8080
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: SequentialExecutor
+            - name: AIRFLOW__CORE__LOAD_EXAMPLES
+              value: "False"
+            - name: AIRFLOW_HOME
+              value: /opt/airflow
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: sqlite:////opt/airflow/airflow.db
+            - name: DATA_PATH
+              value: /opt/airflow/data/EasyVisa.csv
+            - name: K8S_NAMESPACE
+              value: easyvisa
+            - name: PROJECT_ROOT
+              value: /opt/airflow/project
+          envFrom:
+            - secretRef:
+                name: easyvisa-secrets
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            failureThreshold: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-service
+  namespace: easyvisa
+  labels:
+    app: airflow
+spec:
+  type: LoadBalancer
+  selector:
+    app: airflow
+  ports:
+    - name: webserver
+      port: 8080
+      targetPort: 8080

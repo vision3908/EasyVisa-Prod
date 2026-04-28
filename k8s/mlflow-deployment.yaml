@@ -1,4 +1,23 @@
-﻿# k8s/mlflow-deployment.yaml — MLflow Tracking Server on EKS (V10)
+﻿# k8s/mlflow-deployment.yaml - EasyVisa V12 (ebs-immediate StorageClass)
+# CHANGE FROM V11: Fixed image tag and boolean string
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: easyvisa
+  labels:
+    app: mlflow
+spec:
+  type: ClusterIP
+  selector:
+    app: mlflow
+  ports:
+  - port: 5000
+    targetPort: 5000
+
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -7,16 +26,19 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: ebs-immediate
   resources:
     requests:
       storage: 5Gi
-  storageClassName: gp2
+
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mlflow
   namespace: easyvisa
+  labels:
+    app: mlflow
 spec:
   replicas: 1
   selector:
@@ -31,57 +53,47 @@ spec:
       - name: mlflow
         image: ghcr.io/mlflow/mlflow:v2.10.0
         command:
-        - mlflow
-        - server
-        - --backend-store-uri
-        - sqlite:////mlflow/mlflow.db
-        - --default-artifact-root
-        - s3://easyvisa-mlflow-vision-2025/mlflow-artifacts
-        - --host
-        - "0.0.0.0"
-        - --port
-        - "5000"
+          - mlflow
+          - server
+          - --backend-store-uri
+          - sqlite:////mlflow/mlflow.db
+          - --default-artifact-root
+          - s3://easyvisa-mlflow-vision-2025/mlflow-artifacts
+          - --host
+          - 0.0.0.0
+          - --port
+          - "5000"
         ports:
         - containerPort: 5000
         env:
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: aws-access-key-id
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: aws-secret-access-key
-        - name: AWS_DEFAULT_REGION
-          valueFrom:
-            secretKeyRef:
-              name: easyvisa-secrets
-              key: aws-default-region
+        - name: MLFLOW_DISABLE_DNS_REBINDING_PROTECTION
+          value: "true"
+        envFrom:
+        - secretRef:
+            name: easyvisa-secrets
         volumeMounts:
-        - name: mlflow-db-storage
+        - name: mlflow-db
           mountPath: /mlflow
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 1Gi
+            cpu: 500m
         readinessProbe:
           httpGet:
             path: /health
             port: 5000
           initialDelaySeconds: 30
           periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 60
+          periodSeconds: 30
       volumes:
-      - name: mlflow-db-storage
+      - name: mlflow-db
         persistentVolumeClaim:
           claimName: mlflow-db-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mlflow
-  namespace: easyvisa
-spec:
-  type: ClusterIP
-  selector:
-    app: mlflow
-  ports:
-  - port: 5000
-    targetPort: 5000
