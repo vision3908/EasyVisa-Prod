@@ -26,6 +26,7 @@ spec:
       - name: visa-api
         image: 167963468596.dkr.ecr.us-east-1.amazonaws.com/easyvisa-api:latest
           imagePullPolicy: Always
+          imagePullPolicy: Always
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
