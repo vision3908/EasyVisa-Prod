@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: visa-api-deployment
@@ -33,27 +33,27 @@ spec:
           valueFrom:
             secretKeyRef:
               name: easyvisa-secrets
-              key: mlflow-tracking-uri
+              key: MLFLOW_TRACKING_URI
         - name: MLFLOW_MODEL_URI
           valueFrom:
             secretKeyRef:
               name: easyvisa-secrets
-              key: mlflow-model-uri
+              key: MLFLOW_MODEL_URI
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
               name: easyvisa-secrets
-              key: aws-access-key-id
+              key: AWS_ACCESS_KEY_ID
         - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
               name: easyvisa-secrets
-              key: aws-secret-access-key
+              key: AWS_SECRET_ACCESS_KEY
         - name: AWS_DEFAULT_REGION
           valueFrom:
             secretKeyRef:
               name: easyvisa-secrets
-              key: aws-default-region
+              key: AWS_DEFAULT_REGION
         livenessProbe:
           httpGet:
             path: /health
