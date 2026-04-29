@@ -24,9 +24,7 @@ spec:
         command: ['sh', '-c', 'until curl -s "http://mlflow:5000/api/2.0/mlflow/registered-models/get?name=easyvisa_gbm" | grep easyvisa_gbm; do echo waiting for model; sleep 10; done']
       containers:
       - name: visa-api
-        image: 167963468596.dkr.ecr.us-east-1.amazonaws.com/easyvisa-api:latest
-          imagePullPolicy: Always
-          imagePullPolicy: Always
+        image: 167963468596.dkr.ecr.us-east-1.amazonaws.com/easyvisa-api:latest        imagePullPolicy: Always
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -79,3 +77,4 @@ spec:
           limits:
             memory: 1Gi
             cpu: 500m
+
