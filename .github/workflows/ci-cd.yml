@@ -169,15 +169,6 @@ jobs:
           sleep 5
           pip install mlflow boto3
           MLFLOW_TRACKING_URI=http://localhost:5001 python register_model.py
-
-      - name: Register model in MLflow
-        run: |
-          kubectl wait --for=condition=available deployment/mlflow -n $EKS_NAMESPACE --timeout=120s
-          kubectl port-forward -n $EKS_NAMESPACE svc/mlflow 5001:5000 &
-          sleep 5
-          pip install mlflow boto3
-          MLFLOW_TRACKING_URI=http://localhost:5001 python register_model.py
-
       - name: Deploy visa-api to EKS
         run: |
           kubectl apply -f k8s/deployment.yaml -n $EKS_NAMESPACE
