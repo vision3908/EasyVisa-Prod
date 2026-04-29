@@ -232,28 +232,25 @@ def load_from_registry(tracking_uri: str, model_uri: str) -> tuple:
     log.info("Connecting to MLflow: %s", tracking_uri)
     log.info("Loading model from registry: %s", model_uri)
 
-    # Load sklearn model
-    try:
-        model = mlflow.sklearn.load_model(model_uri)
-    except Exception as e:
-        log.error("=" * 65)
-        log.error("FAILED to load model from MLflow registry.")
-        log.error("  model_uri : %s", model_uri)
-        log.error("  error     : %s", e)
-        log.error("")
-        log.error("Possible causes:")
-        log.error("  1. MLflow server not running at %s", tracking_uri)
-        log.error("     Fix: python -m mlflow server --host 0.0.0.0 --port 5000")
-        log.error("  2. Model '%s' not registered yet.", model_uri)
-        log.error("     Fix: python src/train.py --data-path data/EasyVisa.csv")
-        log.error("  3. No version in 'Production' stage.")
-        log.error("     Fix: promote a version in the MLflow UI -> Models tab")
-        log.error("  4. AWS credentials missing or invalid (S3 access denied).")
-        log.error("     Fix: verify AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
-        log.error("=" * 65)
-        sys.exit(1)
 
-    log.info("Model loaded: %s", type(model).__name__)
+    # Load sklearn model - with retry for Kubernetes startup timing
+    max_retries = 10
+    retry_delay = 30  # seconds
+    last_error = None
+    model = None
+    for attempt in range(max_retries):
+        try:
+            model = mlflow.sklearn.load_model(model_uri)
+            break
+        except Exception as e:
+            last_error = e
+            log.error("Attempt %d/%d failed to load model: %s", attempt+1, max_retries, e)
+            if attempt < max_retries - 1:
+                log.info("Retrying in %ds...", retry_delay)
+                time.sleep(retry_delay)
+    if model is None:
+        log.error("FAILED to load model after %d attempts: %s", max_retries, last_error)
+        sys.exit(1)
 
     # Download feature_names.pkl from S3 via MLflow
     feature_artifact_uri = f"{model_uri}/feature_names.pkl"

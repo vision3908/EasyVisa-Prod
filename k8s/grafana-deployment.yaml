@@ -113,8 +113,7 @@ spec:
           periodSeconds: 30
       volumes:
       - name: grafana-storage
-        persistentVolumeClaim:
-          claimName: grafana-pvc
+        emptyDir: {}
       - name: grafana-datasource
         configMap:
           name: grafana-datasource
